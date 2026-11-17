@@ -304,7 +304,7 @@ export default function NoteTopBar({
                   }}
                 >
                   <FileUp size={14} />
-                  {t('Import Markdown')}
+                  {t('Import')}
                 </button>
                 <button
                   role="menuitem"
@@ -352,7 +352,7 @@ export default function NoteTopBar({
       <input
         ref={importInput}
         type="file"
-        accept=".md,.markdown"
+        accept=".md,.markdown,.mdown,.txt,.html,.htm"
         multiple
         className="hidden"
         aria-hidden

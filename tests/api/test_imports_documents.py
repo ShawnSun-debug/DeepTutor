@@ -56,7 +56,7 @@ def storage(tmp_path: Path) -> CoWriterStorage:
 
 @pytest.fixture
 def client(storage: CoWriterStorage, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr(imports_router, "get_co_writer_storage", lambda: storage)
+    monkeypatch.setattr(imports_router, "_document_store", lambda: storage)
     monkeypatch.setattr(co_writer_router, "get_co_writer_storage", lambda: storage)
     app = FastAPI()
     # Production mounts this router at /api/imports (see web/lib/imports-api.ts);

@@ -1,8 +1,13 @@
-"""HTML -> Markdown conversion for the authored-page importer.
+"""HTML -> Markdown conversion shared by the authored-page importer.
 
 A saved web page or an HTML export must arrive as readable Markdown, not as a
 page full of raw tags, and importing one must not pull a new runtime dependency
 into the process — so this is built on the standard library's `html.parser`.
+
+This lives in `deeptutor/utils` on purpose: code that no module manifest claims is owned
+by the core module, whereas everything under `deeptutor/co_writer` belongs to the
+co-writer feature and may not be imported by the API server at module scope. See
+tests/modules/test_isolated_features.py.
 
 The shape mirrors `docx_converter`: one bytes-in / Markdown-out function and one
 dedicated exception, so a conversion fault becomes a per-file failure in the

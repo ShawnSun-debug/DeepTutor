@@ -105,3 +105,11 @@ it('detects nested flashcard blocks and ignores other learning kinds', () => {
   ).toBe(false)
   expect(pageHasFlashcards(null)).toBe(false)
 })
+it('offers every importable note format in the file picker', () => {
+  openMenu(null)
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement
+  expect(input).not.toBeNull()
+  expect(input.accept.split(",")).toEqual(
+    expect.arrayContaining(['.md', '.markdown', '.mdown', '.txt', '.html', '.htm']),
+  )
+})

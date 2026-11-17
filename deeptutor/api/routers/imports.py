@@ -39,13 +39,12 @@ from deeptutor.api.utils.upload_reader import (
     UploadTooLarge,
     read_upload_bytes,
 )
-from deeptutor.co_writer.html_converter import HtmlConversionError, html_to_markdown
-from deeptutor.co_writer.storage import get_co_writer_storage
 from deeptutor.services.session import (
     get_sqlite_session_store,
     make_imported_session_id,
 )
 from deeptutor.utils.file_types import FileTypeRouter
+from deeptutor.utils.html_markdown import HtmlConversionError, html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +272,20 @@ def _normalise_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _document_store() -> Any:
+    """Return the authored-page store, resolved on demand.
+
+    The store belongs to the co-writer feature while this router belongs to the server
+    feature, so importing it at module scope would make the whole API server depend on a
+    feature that may not be installed (see tests/modules/test_isolated_features.py).
+    Resolving through this one helper keeps a single seam for tests to patch.
+    """
+
+    from deeptutor.co_writer.storage import get_co_writer_storage
+
+    return get_co_writer_storage()
+
+
 async def _import_authored_page(
     file: UploadFile, *, destination: str, parent_id: str | None
 ) -> ImportFileResult:
@@ -338,7 +351,17 @@ async def _import_authored_page(
         )
 
     try:
-        document = get_co_writer_storage().create_document(
+        store = _document_store()
+    except ImportError:
+        return ImportFileResult(
+            filename=filename,
+            destination=destination,
+            outcome="failed",
+            reason="The notes feature is not available in this installation.",
+        )
+
+    try:
+        document = store.create_document(
             title=_authored_page_title(filename), content=content, parent_id=parent_id
         )
     except ValueError as exc:
