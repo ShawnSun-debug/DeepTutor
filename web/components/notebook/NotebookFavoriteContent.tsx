@@ -43,7 +43,7 @@ export default function NotebookFavoriteContent({
     kind === 'video_learning'
       ? [...markdown.matchAll(/^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)$/gm)]
       : []
-  const article = ['research', 'reading', 'co_writer', 'guided_learning'].includes(kind)
+  const article = ['research', 'reading', 'co_writer', 'import', 'guided_learning'].includes(kind)
   const headingLines = article ? favoriteHeadings(markdown) : []
   return (
     <div ref={root} className={`dt-favorite-content dt-favorite-content-${kind}`}>

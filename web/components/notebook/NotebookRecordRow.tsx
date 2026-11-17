@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import {
   BookOpen,
+  FileDown,
   FileQuestion,
   Calculator,
   Bot,
@@ -94,6 +95,11 @@ const BADGES: Record<
     labelKey: "Video Learning",
     className: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
     icon: Video,
+  },
+  import: {
+    labelKey: "Imported",
+    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+    icon: FileDown,
   },
 };
 

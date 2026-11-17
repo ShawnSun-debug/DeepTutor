@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Calculator,
+  FileDown,
   FileQuestion,
   FileText,
   GraduationCap,
@@ -26,6 +27,7 @@ const ICONS: Record<string, LucideIcon> = {
   question: FileQuestion,
   solve: Calculator,
   co_writer: FileText,
+  import: FileDown,
   guided_learning: GraduationCap,
 }
 

@@ -183,7 +183,8 @@
               "co_writer",
               "tutorbot",
               "reading",
-              "video_learning"
+              "video_learning",
+              "import"
             ],
             "title": "Record Type",
             "type": "string"
@@ -1103,6 +1104,14 @@
       },
       "Body_import_documents_api_imports_documents_post": {
         "properties": {
+          "collection_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Collection Ids",
+            "type": "array"
+          },
           "destination": {
             "default": "authored_page",
             "title": "Destination",
@@ -5822,6 +5831,20 @@
       "ImportFileResult": {
         "description": "What happened to one file. Every destination reports through this.",
         "properties": {
+          "collection_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Ids"
+          },
           "destination": {
             "title": "Destination",
             "type": "string"
@@ -5860,6 +5883,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
           }
         },
         "required": [
