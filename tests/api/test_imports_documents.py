@@ -289,7 +289,7 @@ def test_one_bad_file_never_fails_the_batch(client: TestClient) -> None:
     assert outcomes["report.docx"]["outcome"] == "skipped"
     assert (
         outcomes["report.docx"]["reason"]
-        == "unsupported extension (supported: .md, .markdown, .mdown, .txt)"
+        == "unsupported extension (supported: .md, .markdown, .mdown, .txt, .html, .htm)"
     )
     assert outcomes["empty.md"]["outcome"] == "skipped"
     assert outcomes["empty.md"]["reason"] == "empty"
