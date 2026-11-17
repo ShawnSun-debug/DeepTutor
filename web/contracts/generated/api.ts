@@ -14029,6 +14029,8 @@ export interface components {
       readonly imported: number;
       /** Skipped */
       readonly skipped: number;
+      /** Task Id */
+      readonly task_id?: string | null;
     };
     /**
      * DocumentParsingInstall

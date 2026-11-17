@@ -625,8 +625,11 @@ _KB_IMPORT_TASK_TYPE = "kb_upload"
 # the knowledge base never said. The equivalence test locks this by comparing it
 # with the upload route's own 409 for the same knowledge base.
 _EMBEDDING_BINDING_UNAVAILABLE = (
-    "The bound embedding model is unavailable or changed. Check the model settings or "
-    "select a model to re-index this knowledge base."
+    "The bound embedding model is unavailable or changed: the model was deleted, its settings "
+    "changed, or it no longer resolves. Restore it in Settings > Embedding models, or select a "
+    "model to re-index this knowledge base. A localhost embedding server (Ollama, vLLM, "
+    "LM Studio or Lemonade) satisfies a fully local deployment and needs no API key; a model on "
+    "a remote API needs network access and its API key."
 )
 
 
