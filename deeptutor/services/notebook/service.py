@@ -37,6 +37,10 @@ class RecordType(str, Enum):
     TUTORBOT = "tutorbot"
     READING = "reading"
     VIDEO_LEARNING = "video_learning"
+    # Material that arrived as a file rather than as the output of a run. It is
+    # its own value so statistics and labels can tell it apart from a saved
+    # answer; borrowing co_writer or chat would misreport where it came from.
+    IMPORT = "import"
 
 
 class NotebookRecord(BaseModel):

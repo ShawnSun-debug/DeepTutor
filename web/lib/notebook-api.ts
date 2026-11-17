@@ -18,7 +18,9 @@ export type NotebookRecordType =
   | "co_writer"
   | "reading"
   | "tutorbot"
-  | "video_learning";
+  | "video_learning"
+  // Material that arrived as a file rather than as a saved run.
+  | "import";
 
 export interface NotebookSummary {
   id: string;

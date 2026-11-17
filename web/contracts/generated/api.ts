@@ -12078,7 +12078,8 @@ export interface components {
         | "co_writer"
         | "tutorbot"
         | "reading"
-        | "video_learning";
+        | "video_learning"
+        | "import";
       /**
        * Summary
        * @default
@@ -12540,6 +12541,11 @@ export interface components {
     };
     /** Body_import_documents_api_imports_documents_post */
     readonly Body_import_documents_api_imports_documents_post: {
+      /**
+       * Collection Ids
+       * @default []
+       */
+      readonly collection_ids: readonly string[];
       /**
        * Destination
        * @default authored_page
@@ -14639,6 +14645,8 @@ export interface components {
      * @description What happened to one file. Every destination reports through this.
      */
     readonly ImportFileResult: {
+      /** Collection Ids */
+      readonly collection_ids?: readonly string[] | null;
       /** Destination */
       readonly destination: string;
       /** Document Id */
@@ -14652,6 +14660,8 @@ export interface components {
       readonly outcome: "imported" | "skipped" | "failed";
       /** Reason */
       readonly reason?: string | null;
+      /** Record Id */
+      readonly record_id?: string | null;
     };
     /** ImportFromBookRequest */
     readonly ImportFromBookRequest: {
