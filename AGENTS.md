@@ -184,3 +184,17 @@ including `verify-release`, and verify the downloads on the actual GitHub
 Release before reporting completion. If any platform fails, fix and rerun it;
 do not silently omit Intel Mac or treat a partial desktop release as complete.
 See `apps/desktop/README.md` for the build and publication flow.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on our fork `ShawnSun-debug/DeepTutor`; upstream `HKUDS/DeepTutor` is read-only. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles keep their default label strings. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context: root `GLOSSARY-MAP.md` indexes per-context `GLOSSARY.md` files for `deeptutor/`, `web/`, `packages/chat-engine/`, `apps/desktop/`. See `docs/agents/domain.md`.
