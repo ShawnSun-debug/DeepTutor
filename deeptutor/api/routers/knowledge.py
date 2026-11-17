@@ -2229,29 +2229,205 @@ async def set_default_kb(kb_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# How a vault is connected. ``live`` is the original pointer-only mode and
+# stays the default; ``indexed`` builds a retrievable knowledge base from the
+# same directory so the ``rag`` tool can cite the user's notes.
+OBSIDIAN_MODE_LIVE = "live"
+OBSIDIAN_MODE_INDEXED = "indexed"
+_OBSIDIAN_MODES = frozenset({OBSIDIAN_MODE_LIVE, OBSIDIAN_MODE_INDEXED})
+
+# Keeps the indexed knowledge base distinct from the live pointer registered for
+# the same vault, so both modes can coexist (and a name clash is impossible).
+_INDEXED_VAULT_KB_SUFFIX = "-indexed"
+
+
 class ConnectObsidianRequest(BaseModel):
     name: str
     vault_path: str
+    mode: str = OBSIDIAN_MODE_LIVE
+
+
+def _find_indexed_vault_kb(manager: KnowledgeBaseManager, folder: Path) -> str | None:
+    """Name of the indexed knowledge base that already ingests ``folder``, if any.
+
+    Reconnecting a vault must not build a second knowledge base or re-ingest its
+    notes, so idempotency is keyed on the registered folder source rather than on
+    the requested name: a vault stays indexed once, whatever it is called. Live
+    pointers, linked indexes and server-backed kinds are skipped — none of them
+    owns an ingestion pipeline, so none can be the indexed twin.
+    """
+    target = str(folder)
+    for kb_name in manager.list_knowledge_bases():
+        entry = manager.config.get("knowledge_bases", {}).get(kb_name) or {}
+        if is_connected_kb(entry):
+            continue
+        try:
+            folders = manager.get_linked_folders(kb_name)
+        except ValueError:
+            continue
+        if any(item.get("path") == target for item in folders):
+            return kb_name
+    return None
+
+
+def _indexed_vault_kb_name(manager: KnowledgeBaseManager, base_name: str) -> str:
+    """A free knowledge base name for the indexed twin of ``base_name``."""
+    registered = set(manager.list_knowledge_bases())
+    candidate = f"{base_name}{_INDEXED_VAULT_KB_SUFFIX}"
+    attempt = 1
+    while candidate in registered:
+        attempt += 1
+        if attempt > 99:
+            raise ValueError(f"Too many indexed knowledge bases for '{base_name}'.")
+        candidate = f"{base_name}{_INDEXED_VAULT_KB_SUFFIX}-{attempt}"
+    return candidate
+
+
+async def _connect_indexed_obsidian_vault(
+    name: str, folder: Path, background_tasks: BackgroundTasks | None
+) -> dict[str, Any]:
+    """Register the vault as an ordinary indexed KB plus a linked folder source.
+
+    The knowledge base is a normal one on the default LlamaIndex pipeline — no
+    ``type``, so the ``rag`` tool retrieves from it — and the vault directory is
+    attached with :meth:`KnowledgeBaseManager.link_folder` before the first sync
+    is queued through the existing folder-ingestion task, which stages each note
+    at its path relative to the vault. That relative staging is what keeps
+    ``daily/note.md`` and ``projects/note.md`` distinct documents.
+
+    ``connect-folder`` is deliberately not reused: it mounts a *pre-built* engine
+    index (it probes for a ready ``version-N`` directory) and would reject a plain
+    Markdown vault.
+    """
+    from deeptutor.services.workspace.context import current_workspace_id
+    from deeptutor.services.workspace.knowledge import qualified_kb_id
+
+    with _connected_kb_registration(name) as (manager, _live_resource_id):
+        existing = _find_indexed_vault_kb(manager, folder)
+        if existing is not None:
+            folders = manager.get_linked_folders(existing)
+            folder_info = next((f for f in folders if f.get("path") == str(folder)), {})
+            return {
+                "status": "connected",
+                "mode": OBSIDIAN_MODE_INDEXED,
+                "id": qualified_kb_id(existing, current_workspace_id()),
+                "name": existing,
+                "vault_path": str(folder),
+                "rag_provider": DEFAULT_PROVIDER,
+                "linked_folder_id": folder_info.get("id"),
+                "task_id": None,
+                "documents_queued": 0,
+                "already_connected": True,
+            }
+
+        indexed_name = _indexed_vault_kb_name(manager, name)
+        await _create_knowledge_base_owned(
+            background_tasks,
+            name=indexed_name,
+            files=[],
+            rag_provider=DEFAULT_PROVIDER,
+            pageindex_mode="",
+            search_mode="",
+            rel_paths=None,
+            indexing_llm="",
+            embedding_model="",
+        )
+
+        folder_info = manager.link_folder(indexed_name, str(folder))
+        kb_base_dir = Path(manager.base_dir)
+
+        # Queue the first sync exactly as the folder-sync route does. Direct
+        # (non-HTTP) callers pass no BackgroundTasks; they get the registered
+        # knowledge base and folder source but nothing queued.
+        task_id: str | None = None
+        queued_files: list[str] = []
+        if background_tasks is not None:
+            changes = manager.detect_folder_changes(indexed_name, folder_info["id"])
+            queued_files = changes["new_files"] + changes["modified_files"]
+            if queued_files:
+                task_id = _build_unique_task_id(
+                    "kb_upload", f"{indexed_name}_folder_{folder_info['id']}"
+                )
+                get_task_stream_manager().ensure_task(task_id)
+                _mark_kb_queued_for_processing(
+                    manager,
+                    indexed_name,
+                    task_id,
+                    f"Indexing {len(queued_files)} note(s) from the Obsidian vault...",
+                )
+                background_tasks.add_task(
+                    run_upload_processing_task,
+                    accepted_indexing_snapshot=_freeze_append_indexing(
+                        indexed_name, kb_base_dir, DEFAULT_PROVIDER
+                    ),
+                    kb_name=indexed_name,
+                    base_dir=str(kb_base_dir),
+                    uploaded_file_paths=queued_files,
+                    task_id=task_id,
+                    rag_provider=DEFAULT_PROVIDER,
+                    folder_id=folder_info["id"],
+                    folder_root=str(folder),
+                    owner=get_current_user_or_none(),
+                    storage_workspace_id=workspace_id_for_kb_base_dir(kb_base_dir),
+                )
+            else:
+                # A completed scan is a successful sync even with no work.
+                manager.update_folder_sync_state(indexed_name, folder_info["id"], [])
+
+        return {
+            "status": "connected",
+            "mode": OBSIDIAN_MODE_INDEXED,
+            "id": qualified_kb_id(indexed_name, current_workspace_id()),
+            "name": indexed_name,
+            "vault_path": str(folder),
+            "rag_provider": DEFAULT_PROVIDER,
+            "linked_folder_id": folder_info["id"],
+            "task_id": task_id,
+            "documents_queued": len(queued_files),
+            "already_connected": False,
+        }
 
 
 @router.post("/knowledge-bases/connect-obsidian")
-async def connect_obsidian_vault(payload: ConnectObsidianRequest):
+async def connect_obsidian_vault(
+    payload: ConnectObsidianRequest, background_tasks: BackgroundTasks = None
+):
     """Connect an existing Obsidian vault as a knowledge base.
 
-    Registers a pointer to the user's vault directory (``type: obsidian``) — no
-    upload, no index. The vault must be a directory the server can reach (i.e. a
-    local/self-hosted deployment); the Obsidian capability reads it live.
+    Two modes, both independent so they may be registered for one vault at once:
+
+    * ``live`` (default) registers a pointer to the user's vault directory
+      (``type: obsidian``) — no upload, no index. The Obsidian capability reads it
+      live, and the ``rag`` tool cannot retrieve from it.
+    * ``indexed`` creates a real retrievable knowledge base on the default
+      LlamaIndex pipeline, registers the vault directory as a linked folder
+      source, and queues the first sync.
+
+    The vault must be an existing directory the server can reach (i.e. a
+    local/self-hosted deployment); that is checked before anything is registered.
     """
     name = (payload.name or "").strip()
     vault_path = (payload.vault_path or "").strip()
     if not name or not vault_path:
         raise HTTPException(status_code=400, detail="Both name and vault_path are required.")
+    mode = (payload.mode or OBSIDIAN_MODE_LIVE).strip().lower()
+    if mode not in _OBSIDIAN_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown mode '{payload.mode}'. "
+                f"Use '{OBSIDIAN_MODE_LIVE}' or '{OBSIDIAN_MODE_INDEXED}'."
+            ),
+        )
     try:
         folder = assert_path_allowed(vault_path)
+        if mode == OBSIDIAN_MODE_INDEXED:
+            return await _connect_indexed_obsidian_vault(name, folder, background_tasks)
         with _connected_kb_registration(name) as (manager, resource_id):
             entry = manager.register_obsidian_vault(name, str(folder))
         return {
             "status": "connected",
+            "mode": OBSIDIAN_MODE_LIVE,
             "id": resource_id,
             "name": name,
             "vault_path": entry["vault_path"],

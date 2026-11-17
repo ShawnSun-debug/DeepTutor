@@ -3211,6 +3211,11 @@
       },
       "ConnectObsidianRequest": {
         "properties": {
+          "mode": {
+            "default": "live",
+            "title": "Mode",
+            "type": "string"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -26802,7 +26807,7 @@
     },
     "/api/knowledge-bases/connect-obsidian": {
       "post": {
-        "description": "Connect an existing Obsidian vault as a knowledge base.\n\nRegisters a pointer to the user's vault directory (``type: obsidian``) — no\nupload, no index. The vault must be a directory the server can reach (i.e. a\nlocal/self-hosted deployment); the Obsidian capability reads it live.",
+        "description": "Connect an existing Obsidian vault as a knowledge base.\n\nTwo modes, both independent so they may be registered for one vault at once:\n\n* ``live`` (default) registers a pointer to the user's vault directory\n  (``type: obsidian``) — no upload, no index. The Obsidian capability reads it\n  live, and the ``rag`` tool cannot retrieve from it.\n* ``indexed`` creates a real retrievable knowledge base on the default\n  LlamaIndex pipeline, registers the vault directory as a linked folder\n  source, and queues the first sync.\n\nThe vault must be an existing directory the server can reach (i.e. a\nlocal/self-hosted deployment); that is checked before anything is registered.",
         "operationId": "connect_obsidian_vault_api_knowledge_bases_connect_obsidian_post",
         "parameters": [
           {

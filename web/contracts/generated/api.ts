@@ -3160,9 +3160,17 @@ export interface paths {
      * Connect Obsidian Vault
      * @description Connect an existing Obsidian vault as a knowledge base.
      *
-     *     Registers a pointer to the user's vault directory (``type: obsidian``) — no
-     *     upload, no index. The vault must be a directory the server can reach (i.e. a
-     *     local/self-hosted deployment); the Obsidian capability reads it live.
+     *     Two modes, both independent so they may be registered for one vault at once:
+     *
+     *     * ``live`` (default) registers a pointer to the user's vault directory
+     *       (``type: obsidian``) — no upload, no index. The Obsidian capability reads it
+     *       live, and the ``rag`` tool cannot retrieve from it.
+     *     * ``indexed`` creates a real retrievable knowledge base on the default
+     *       LlamaIndex pipeline, registers the vault directory as a linked folder
+     *       source, and queues the first sync.
+     *
+     *     The vault must be an existing directory the server can reach (i.e. a
+     *     local/self-hosted deployment); that is checked before anything is registered.
      */
     readonly post: operations["connect_obsidian_vault_api_knowledge_bases_connect_obsidian_post"];
     readonly delete?: never;
@@ -13461,6 +13469,11 @@ export interface components {
     };
     /** ConnectObsidianRequest */
     readonly ConnectObsidianRequest: {
+      /**
+       * Mode
+       * @default live
+       */
+      readonly mode: string;
       /** Name */
       readonly name: string;
       /** Vault Path */
