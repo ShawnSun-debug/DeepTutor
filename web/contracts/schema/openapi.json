@@ -183,7 +183,8 @@
               "co_writer",
               "tutorbot",
               "reading",
-              "video_learning"
+              "video_learning",
+              "import"
             ],
             "title": "Record Type",
             "type": "string"
@@ -1099,6 +1100,62 @@
           "name"
         ],
         "title": "Body_create_knowledge_base_api_knowledge_bases_post",
+        "type": "object"
+      },
+      "Body_import_documents_api_imports_documents_post": {
+        "properties": {
+          "collection_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Collection Ids",
+            "type": "array"
+          },
+          "destination": {
+            "default": "authored_page",
+            "title": "Destination",
+            "type": "string"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "contentMediaType": "application/octet-stream",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          }
+        },
+        "title": "Body_import_documents_api_imports_documents_post",
         "type": "object"
       },
       "Body_import_docx_api_documents_import_docx_post": {
@@ -3174,6 +3231,11 @@
       },
       "ConnectObsidianRequest": {
         "properties": {
+          "mode": {
+            "default": "live",
+            "title": "Mode",
+            "type": "string"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -4319,6 +4381,61 @@
           }
         },
         "title": "DoclingRemoteTest",
+        "type": "object"
+      },
+      "DocumentImportResponse": {
+        "description": "One outcome per file, plus the batch totals a UI shows.",
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ImportFileResult"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "groups": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ImportDestinationGroup"
+            },
+            "title": "Groups",
+            "type": "object"
+          },
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "destination",
+          "imported",
+          "skipped",
+          "failed",
+          "files"
+        ],
+        "title": "DocumentImportResponse",
         "type": "object"
       },
       "DocumentParsingInstall": {
@@ -5738,6 +5855,141 @@
           "model_id"
         ],
         "title": "ImageDescriptionModelSelection",
+        "type": "object"
+      },
+      "ImportDestinationGroup": {
+        "description": "One destination's share of a batch, so a UI can render it as a section.",
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "files": {
+            "title": "Files",
+            "type": "integer"
+          },
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "destination",
+          "files",
+          "imported",
+          "skipped",
+          "failed"
+        ],
+        "title": "ImportDestinationGroup",
+        "type": "object"
+      },
+      "ImportFileResult": {
+        "description": "What happened to one file. Every destination reports through this.",
+        "properties": {
+          "collection_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Ids"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "imported",
+              "skipped",
+              "failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "stored_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Paths"
+          }
+        },
+        "required": [
+          "filename",
+          "destination",
+          "outcome"
+        ],
+        "title": "ImportFileResult",
         "type": "object"
       },
       "ImportFromBookRequest": {
@@ -12090,7 +12342,7 @@
         "type": "object"
       },
       "SyncFolderResponse": {
-        "description": "Response model for a linked-folder sync request.",
+        "description": "Response model for a linked-folder sync request.\n\nQuirky but kept: new_files/modified_files/removed_files are counts while\nfiles/removed are the matching paths.",
         "properties": {
           "file_count": {
             "title": "File Count",
@@ -12124,6 +12376,18 @@
           },
           "new_files": {
             "title": "New Files",
+            "type": "integer"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "removed_files": {
+            "default": 0,
+            "title": "Removed Files",
             "type": "integer"
           },
           "task_id": {
@@ -25957,6 +26221,81 @@
         ]
       }
     },
+    "/api/imports/documents": {
+      "post": {
+        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination, a destination missing the thing it names —\nis an HTTP error, because there is nothing per-file to report for it.\n\n`target` names the instance inside the destination: the knowledge base to\nimport into. It is used verbatim, never case-folded, because a\nknowledge-base name is user data (see the note above `_IMPORTERS`).\n\n`destination=\"auto\"` routes each file by type instead of sending the whole\nbatch to one store: HTML and (without named collections) Markdown and plain\ntext become notes, Markdown and plain text with named collections become\nrecords, and everything the knowledge-base engine accepts goes to the named\nknowledge base. The routing table and its reasoning live above\n`_knowledge_base_extensions`. Every file still reports the store it\nactually landed in, and `groups` rolls those results up per destination.",
+        "operationId": "import_documents_api_imports_documents_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_documents_api_imports_documents_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentImportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Documents",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
     "/api/knowledge-bases": {
       "get": {
         "description": "Disk probes must not block the async worker or its other requests (#1711).",
@@ -26602,7 +26941,7 @@
     },
     "/api/knowledge-bases/connect-obsidian": {
       "post": {
-        "description": "Connect an existing Obsidian vault as a knowledge base.\n\nRegisters a pointer to the user's vault directory (``type: obsidian``) — no\nupload, no index. The vault must be a directory the server can reach (i.e. a\nlocal/self-hosted deployment); the Obsidian capability reads it live.",
+        "description": "Connect an existing Obsidian vault as a knowledge base.\n\nTwo modes, both independent so they may be registered for one vault at once:\n\n* ``live`` (default) registers a pointer to the user's vault directory\n  (``type: obsidian``) — no upload, no index. The Obsidian capability reads it\n  live, and the ``rag`` tool cannot retrieve from it.\n* ``indexed`` creates a real retrievable knowledge base on the default\n  LlamaIndex pipeline, registers the vault directory as a linked folder\n  source, and queues the first sync.\n\nThe vault must be an existing directory the server can reach (i.e. a\nlocal/self-hosted deployment); that is checked before anything is registered.",
         "operationId": "connect_obsidian_vault_api_knowledge_bases_connect_obsidian_post",
         "parameters": [
           {
@@ -31280,7 +31619,7 @@
     },
     "/api/knowledge-bases/{kb_name}/sync-folder/{folder_id}": {
       "post": {
-        "description": "Sync files from a linked folder to the knowledge base.\n\nThis scans the linked folder for supported documents and processes\nany new files that haven't been added yet.",
+        "description": "Sync files from a linked folder to the knowledge base.\n\nIndexes the files added or modified since the last sync and leaves the\nothers alone. Files the folder no longer provides are reported in the\nresponse and stay in the knowledge base: deleting an imported document\nremains an explicit action. A source that has gone missing, or that lost\nevery supported file it used to provide, is refused instead of reported as\na successful sync, and a second sync of a source that is already running is\nrefused rather than started twice.",
         "operationId": "sync_folder_api_knowledge_bases__kb_name__sync_folder__folder_id__post",
         "parameters": [
           {

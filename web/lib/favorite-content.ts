@@ -32,6 +32,7 @@ export const FAVORITE_LABELS: Record<string, string> = {
   question: 'Question',
   reading: 'Reading',
   video_learning: 'Video Learning',
+  import: 'Imported',
   co_writer: 'Learning notebook',
   guided_learning: 'Guided Learning',
 }

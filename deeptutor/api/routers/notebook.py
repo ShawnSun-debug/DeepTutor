@@ -74,6 +74,7 @@ class AddRecordRequest(BaseModel):
         "tutorbot",
         "reading",
         "video_learning",
+        "import",
     ]
     title: str
     summary: str = ""

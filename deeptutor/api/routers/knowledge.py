@@ -47,6 +47,13 @@ from deeptutor.knowledge.add_documents import (
     hashes_for_indexed_files,
     remove_raw_document,
 )
+from deeptutor.knowledge.embedding_setup import (
+    EMBEDDING_BINDING_UNAVAILABLE,
+    LOCAL_EMBEDDING_OPTION,
+    describe_embedding_target,
+    explain_embedding_problem,
+)
+from deeptutor.knowledge.folder_sync_lock import FolderSyncLock
 from deeptutor.knowledge.initializer import KnowledgeBaseInitializer
 from deeptutor.knowledge.kb_types import is_connected_kb, supports_local_raw_files
 from deeptutor.knowledge.manager import KnowledgeBaseManager
@@ -248,7 +255,11 @@ class LinkedFolderInfo(BaseModel):
 
 
 class SyncFolderResponse(BaseModel):
-    """Response model for a linked-folder sync request."""
+    """Response model for a linked-folder sync request.
+
+    Quirky but kept: new_files/modified_files/removed_files are counts while
+    files/removed are the matching paths.
+    """
 
     message: str
     folder_path: str | None = None
@@ -257,6 +268,10 @@ class SyncFolderResponse(BaseModel):
     modified_files: int
     file_count: int
     task_id: str | None
+    # Tracked source files the folder no longer provides. They are reported,
+    # never deleted: removing an imported document stays an explicit action.
+    removed: list[str] = Field(default_factory=list)
+    removed_files: int = 0
 
 
 class SupportedFileTypesInfo(BaseModel):
@@ -890,6 +905,7 @@ def _resolve_embedding_form(value, provider: str, entry: dict | None = None):
                 detail="This knowledge engine does not use a local embedding model.",
             )
         return None, None
+    selection = None
     try:
         selection = (
             json.loads(value)
@@ -905,7 +921,54 @@ def _resolve_embedding_form(value, provider: str, entry: dict | None = None):
         selection = {k: selection[k] for k in ("profile_id", "model_id")}
         return selection, get_embedding_config(selection)
     except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # An embedding refusal has to say whether this profile reaches a remote
+        # service and how to run fully local without a key. See
+        # deeptutor.knowledge.embedding_setup.
+        raise HTTPException(
+            status_code=400,
+            detail=explain_embedding_problem(
+                str(exc), selection=selection if isinstance(selection, dict) else None
+            ),
+        ) from exc
+
+
+def _embedding_setup_payload(rag_provider: str, embedding_selection: dict | None) -> dict:
+    """What this knowledge base will embed with, or why it cannot yet.
+
+    Reported when the knowledge base is created, so "a localhost server needs
+    no key" is discoverable before the first failed index instead of after it.
+    """
+    from deeptutor.services.rag.embedding_binding import EMBEDDING_PROVIDERS
+
+    if rag_provider not in EMBEDDING_PROVIDERS:
+        return {
+            "required": False,
+            "configured": None,
+            "model": None,
+            "provider": None,
+            "provider_mode": None,
+            "endpoint": None,
+            "is_local": None,
+            "requires_network": None,
+            "needs_api_key": False,
+            "error": None,
+            "message": (
+                f"The {rag_provider} engine does not use embedding vectors, so no embedding "
+                "model is needed."
+            ),
+            "guidance": "",
+        }
+    payload = describe_embedding_target(selection=embedding_selection).as_dict()
+    payload["required"] = True
+    payload["guidance"] = LOCAL_EMBEDDING_OPTION
+    return payload
+
+
+def _created_message(base: str, embedding_setup: dict) -> str:
+    """Append the honest embedding verdict when the new KB cannot index yet."""
+    if not embedding_setup.get("required") or embedding_setup.get("configured"):
+        return base
+    return f"{base} {embedding_setup['message']} {embedding_setup['guidance']}"
 
 
 def _enforce_provider_formats(provider: str, files: list[UploadFile]) -> None:
@@ -2229,29 +2292,205 @@ async def set_default_kb(kb_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# How a vault is connected. ``live`` is the original pointer-only mode and
+# stays the default; ``indexed`` builds a retrievable knowledge base from the
+# same directory so the ``rag`` tool can cite the user's notes.
+OBSIDIAN_MODE_LIVE = "live"
+OBSIDIAN_MODE_INDEXED = "indexed"
+_OBSIDIAN_MODES = frozenset({OBSIDIAN_MODE_LIVE, OBSIDIAN_MODE_INDEXED})
+
+# Keeps the indexed knowledge base distinct from the live pointer registered for
+# the same vault, so both modes can coexist (and a name clash is impossible).
+_INDEXED_VAULT_KB_SUFFIX = "-indexed"
+
+
 class ConnectObsidianRequest(BaseModel):
     name: str
     vault_path: str
+    mode: str = OBSIDIAN_MODE_LIVE
+
+
+def _find_indexed_vault_kb(manager: KnowledgeBaseManager, folder: Path) -> str | None:
+    """Name of the indexed knowledge base that already ingests ``folder``, if any.
+
+    Reconnecting a vault must not build a second knowledge base or re-ingest its
+    notes, so idempotency is keyed on the registered folder source rather than on
+    the requested name: a vault stays indexed once, whatever it is called. Live
+    pointers, linked indexes and server-backed kinds are skipped — none of them
+    owns an ingestion pipeline, so none can be the indexed twin.
+    """
+    target = str(folder)
+    for kb_name in manager.list_knowledge_bases():
+        entry = manager.config.get("knowledge_bases", {}).get(kb_name) or {}
+        if is_connected_kb(entry):
+            continue
+        try:
+            folders = manager.get_linked_folders(kb_name)
+        except ValueError:
+            continue
+        if any(item.get("path") == target for item in folders):
+            return kb_name
+    return None
+
+
+def _indexed_vault_kb_name(manager: KnowledgeBaseManager, base_name: str) -> str:
+    """A free knowledge base name for the indexed twin of ``base_name``."""
+    registered = set(manager.list_knowledge_bases())
+    candidate = f"{base_name}{_INDEXED_VAULT_KB_SUFFIX}"
+    attempt = 1
+    while candidate in registered:
+        attempt += 1
+        if attempt > 99:
+            raise ValueError(f"Too many indexed knowledge bases for '{base_name}'.")
+        candidate = f"{base_name}{_INDEXED_VAULT_KB_SUFFIX}-{attempt}"
+    return candidate
+
+
+async def _connect_indexed_obsidian_vault(
+    name: str, folder: Path, background_tasks: BackgroundTasks | None
+) -> dict[str, Any]:
+    """Register the vault as an ordinary indexed KB plus a linked folder source.
+
+    The knowledge base is a normal one on the default LlamaIndex pipeline — no
+    ``type``, so the ``rag`` tool retrieves from it — and the vault directory is
+    attached with :meth:`KnowledgeBaseManager.link_folder` before the first sync
+    is queued through the existing folder-ingestion task, which stages each note
+    at its path relative to the vault. That relative staging is what keeps
+    ``daily/note.md`` and ``projects/note.md`` distinct documents.
+
+    ``connect-folder`` is deliberately not reused: it mounts a *pre-built* engine
+    index (it probes for a ready ``version-N`` directory) and would reject a plain
+    Markdown vault.
+    """
+    from deeptutor.services.workspace.context import current_workspace_id
+    from deeptutor.services.workspace.knowledge import qualified_kb_id
+
+    with _connected_kb_registration(name) as (manager, _live_resource_id):
+        existing = _find_indexed_vault_kb(manager, folder)
+        if existing is not None:
+            folders = manager.get_linked_folders(existing)
+            folder_info = next((f for f in folders if f.get("path") == str(folder)), {})
+            return {
+                "status": "connected",
+                "mode": OBSIDIAN_MODE_INDEXED,
+                "id": qualified_kb_id(existing, current_workspace_id()),
+                "name": existing,
+                "vault_path": str(folder),
+                "rag_provider": DEFAULT_PROVIDER,
+                "linked_folder_id": folder_info.get("id"),
+                "task_id": None,
+                "documents_queued": 0,
+                "already_connected": True,
+            }
+
+        indexed_name = _indexed_vault_kb_name(manager, name)
+        await _create_knowledge_base_owned(
+            background_tasks,
+            name=indexed_name,
+            files=[],
+            rag_provider=DEFAULT_PROVIDER,
+            pageindex_mode="",
+            search_mode="",
+            rel_paths=None,
+            indexing_llm="",
+            embedding_model="",
+        )
+
+        folder_info = manager.link_folder(indexed_name, str(folder))
+        kb_base_dir = Path(manager.base_dir)
+
+        # Queue the first sync exactly as the folder-sync route does. Direct
+        # (non-HTTP) callers pass no BackgroundTasks; they get the registered
+        # knowledge base and folder source but nothing queued.
+        task_id: str | None = None
+        queued_files: list[str] = []
+        if background_tasks is not None:
+            changes = manager.detect_folder_changes(indexed_name, folder_info["id"])
+            queued_files = changes["new_files"] + changes["modified_files"]
+            if queued_files:
+                task_id = _build_unique_task_id(
+                    "kb_upload", f"{indexed_name}_folder_{folder_info['id']}"
+                )
+                get_task_stream_manager().ensure_task(task_id)
+                _mark_kb_queued_for_processing(
+                    manager,
+                    indexed_name,
+                    task_id,
+                    f"Indexing {len(queued_files)} note(s) from the Obsidian vault...",
+                )
+                background_tasks.add_task(
+                    run_upload_processing_task,
+                    accepted_indexing_snapshot=_freeze_append_indexing(
+                        indexed_name, kb_base_dir, DEFAULT_PROVIDER
+                    ),
+                    kb_name=indexed_name,
+                    base_dir=str(kb_base_dir),
+                    uploaded_file_paths=queued_files,
+                    task_id=task_id,
+                    rag_provider=DEFAULT_PROVIDER,
+                    folder_id=folder_info["id"],
+                    folder_root=str(folder),
+                    owner=get_current_user_or_none(),
+                    storage_workspace_id=workspace_id_for_kb_base_dir(kb_base_dir),
+                )
+            else:
+                # A completed scan is a successful sync even with no work.
+                manager.update_folder_sync_state(indexed_name, folder_info["id"], [])
+
+        return {
+            "status": "connected",
+            "mode": OBSIDIAN_MODE_INDEXED,
+            "id": qualified_kb_id(indexed_name, current_workspace_id()),
+            "name": indexed_name,
+            "vault_path": str(folder),
+            "rag_provider": DEFAULT_PROVIDER,
+            "linked_folder_id": folder_info["id"],
+            "task_id": task_id,
+            "documents_queued": len(queued_files),
+            "already_connected": False,
+        }
 
 
 @router.post("/knowledge-bases/connect-obsidian")
-async def connect_obsidian_vault(payload: ConnectObsidianRequest):
+async def connect_obsidian_vault(
+    payload: ConnectObsidianRequest, background_tasks: BackgroundTasks = None
+):
     """Connect an existing Obsidian vault as a knowledge base.
 
-    Registers a pointer to the user's vault directory (``type: obsidian``) — no
-    upload, no index. The vault must be a directory the server can reach (i.e. a
-    local/self-hosted deployment); the Obsidian capability reads it live.
+    Two modes, both independent so they may be registered for one vault at once:
+
+    * ``live`` (default) registers a pointer to the user's vault directory
+      (``type: obsidian``) — no upload, no index. The Obsidian capability reads it
+      live, and the ``rag`` tool cannot retrieve from it.
+    * ``indexed`` creates a real retrievable knowledge base on the default
+      LlamaIndex pipeline, registers the vault directory as a linked folder
+      source, and queues the first sync.
+
+    The vault must be an existing directory the server can reach (i.e. a
+    local/self-hosted deployment); that is checked before anything is registered.
     """
     name = (payload.name or "").strip()
     vault_path = (payload.vault_path or "").strip()
     if not name or not vault_path:
         raise HTTPException(status_code=400, detail="Both name and vault_path are required.")
+    mode = (payload.mode or OBSIDIAN_MODE_LIVE).strip().lower()
+    if mode not in _OBSIDIAN_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown mode '{payload.mode}'. "
+                f"Use '{OBSIDIAN_MODE_LIVE}' or '{OBSIDIAN_MODE_INDEXED}'."
+            ),
+        )
     try:
         folder = assert_path_allowed(vault_path)
+        if mode == OBSIDIAN_MODE_INDEXED:
+            return await _connect_indexed_obsidian_vault(name, folder, background_tasks)
         with _connected_kb_registration(name) as (manager, resource_id):
             entry = manager.register_obsidian_vault(name, str(folder))
         return {
             "status": "connected",
+            "mode": OBSIDIAN_MODE_LIVE,
             "id": resource_id,
             "name": name,
             "vault_path": entry["vault_path"],
@@ -3512,10 +3751,10 @@ async def upload_files(
 
         binding_state, bound_config = binding_status(kb_entry)
         if binding_state in {"missing", "changed", "unconfigured"}:
-            raise HTTPException(
-                status_code=409,
-                detail="The bound embedding model is unavailable or changed. Check the model settings or select a model to re-index this knowledge base.",
-            )
+            # One sentence, shared verbatim with the import endpoint's per-file
+            # reason: a paraphrase there would tell the user something this
+            # route never said.
+            raise HTTPException(status_code=409, detail=EMBEDDING_BINDING_UNAVAILABLE)
         with embedding_config_scope(bound_config) if bound_config else nullcontext():
             _assert_provider_ready(kb_provider)
             accepted_snapshot = _freeze_append_indexing(
@@ -3683,6 +3922,9 @@ async def _create_knowledge_base_owned(
         embedding_selection, embedding_config = _resolve_embedding_form(
             embedding_model, rag_provider
         )
+        # What this knowledge base will embed with. Reported back with the
+        # creation so "no key needed" is discoverable, not a later index error.
+        embedding_setup = _embedding_setup_payload(rag_provider, embedding_selection)
         indexing_snapshot = None
         if indexing_llm:
             raise HTTPException(
@@ -3820,10 +4062,13 @@ async def _create_knowledge_base_owned(
             )
             logger.info(f"KB '{name}' created (no documents yet)")
             return {
-                "message": f"Knowledge base '{name}' created (no documents yet).",
+                "message": _created_message(
+                    f"Knowledge base '{name}' created (no documents yet).", embedding_setup
+                ),
                 "name": name,
                 "files": [],
                 "task_id": None,
+                "embedding_setup": embedding_setup,
             }
 
         uploaded_files, _ = await _save_uploaded_files_off_loop(
@@ -3850,10 +4095,14 @@ async def _create_knowledge_base_owned(
         logger.info(f"KB '{name}' created, processing {len(uploaded_files)} files in background")
 
         return {
-            "message": f"Knowledge base '{name}' created. Processing {len(uploaded_files)} files in background.",
+            "message": _created_message(
+                f"Knowledge base '{name}' created. Processing {len(uploaded_files)} files in background.",
+                embedding_setup,
+            ),
             "name": name,
             "files": uploaded_files,
             "task_id": task_id,
+            "embedding_setup": embedding_setup,
         }
 
     except (HTTPException, AccessError):
@@ -4418,7 +4667,6 @@ async def cancel_indexing_run(kb_name: str, task_id: str):
 
 @router.get("/knowledge-bases/{kb_name}/indexing-readiness")
 async def get_indexing_readiness(kb_name: str):
-    from deeptutor.services.embedding.config import get_embedding_config
     from deeptutor.services.parsing import get_parse_service
     from deeptutor.services.parsing.engines.factory import get_parser
 
@@ -4427,7 +4675,10 @@ async def get_indexing_readiness(kb_name: str):
     parser = get_parser(engine)
     config = parser.resolve_config()
     report = parser.is_ready(config)
-    embedding = get_embedding_config()
+    # Report the embedding target instead of raising: a missing model or key is
+    # a verdict about this knowledge base, not a 500. The network/local split
+    # says whether indexing would leave this machine.
+    embedding = describe_embedding_target()
     return {
         "parser": engine,
         "ready": report.ready,
@@ -4437,7 +4688,10 @@ async def get_indexing_readiness(kb_name: str):
         "mode": getattr(config, "mode", None),
         "device": getattr(config, "device", None),
         "embedding_model": embedding.model,
-        "embedding_configured": bool(embedding.model),
+        "embedding_configured": embedding.configured,
+        "embedding_endpoint": embedding.endpoint,
+        "embedding_requires_network": embedding.requires_network,
+        "embedding_message": embedding.message,
         "source_count": len(
             FileTypeRouter.collect_supported_files(
                 resource.base_dir / resource.name / "raw", recursive=True
@@ -4845,6 +5099,81 @@ async def unlink_folder(kb_name: str, folder_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _assert_linked_folder_scannable(folder_path: str, changes: dict) -> None:
+    """Refuse a scan that cannot tell "nothing new" from "nothing there".
+
+    collect_supported_files() returns nothing both for a folder that is gone
+    and for one that is merely up to date, so without this check a missing or
+    emptied source reported a successful sync and stamped last_sync.
+    """
+    if not changes.get("folder_exists", True):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Linked folder '{folder_path}' is missing or is not a directory, "
+                "so nothing was synced."
+            ),
+        )
+    if changes.get("scanned_count", 0) == 0 and changes.get("tracked_count", 0) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Linked folder '{folder_path}' no longer contains any supported files; "
+                f"{changes['tracked_count']} previously synced file(s) are missing from it. "
+                "Nothing was synced."
+            ),
+        )
+
+
+def _removed_files_note(count: int) -> str:
+    """State what a sync did with source files the folder no longer provides."""
+    if count == 1:
+        return (
+            "1 source file is no longer in the folder; "
+            "its imported copy stays in the knowledge base."
+        )
+    return (
+        f"{count} source files are no longer in the folder; "
+        "their imported copies stay in the knowledge base."
+    )
+
+
+def _record_reported_removals(
+    manager, kb_name: str, folder_id: str, removed_files: list[str]
+) -> None:
+    """Forget removals the response is about to report.
+
+    Reported once is reported forever otherwise: change detection keys its
+    state by source path, so a tracked path the folder no longer provides
+    would be re-announced by every later sync. Pruning here keeps the
+    reported removal honest without deleting the imported copy.
+
+    Bookkeeping must never fail a scan that already succeeded, so a failure
+    is logged and the removals are reported anyway.
+    """
+    if not removed_files:
+        return
+    try:
+        manager.prune_folder_sync_state(kb_name, folder_id, removed_files)
+    except Exception as exc:
+        logger.warning(
+            f"Could not forget {len(removed_files)} reported removal(s) from folder "
+            f"'{folder_id}' of KB '{kb_name}': {exc}"
+        )
+
+
+async def _run_folder_sync_task(sync_lock: FolderSyncLock, **task_kwargs) -> None:
+    """Run the shared upload task and hand this folder source's lock back.
+
+    Releasing here, rather than in the route, is what makes the guard cover the
+    whole indexing run; the finally keeps that true when indexing raises.
+    """
+    try:
+        await run_upload_processing_task(**task_kwargs)
+    finally:
+        sync_lock.release()
+
+
 @router.post(
     "/knowledge-bases/{kb_name}/sync-folder/{folder_id}",
     response_model=SyncFolderResponse,
@@ -4853,8 +5182,13 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
     """
     Sync files from a linked folder to the knowledge base.
 
-    This scans the linked folder for supported documents and processes
-    any new files that haven't been added yet.
+    Indexes the files added or modified since the last sync and leaves the
+    others alone. Files the folder no longer provides are reported in the
+    response and stay in the knowledge base: deleting an imported document
+    remains an explicit action. A source that has gone missing, or that lost
+    every supported file it used to provide, is refused instead of reported as
+    a successful sync, and a second sync of a source that is already running is
+    refused rather than started twice.
     """
     try:
         manager, kb_name, kb_base_dir = _writable_kb(kb_name)
@@ -4876,66 +5210,99 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
 
         folder_path = folder_info["path"]
 
-        # Check for changes (new or modified files)
+        # Check for changes (new, modified or removed files)
         changes = manager.detect_folder_changes(kb_name, folder_id)
+        _assert_linked_folder_scannable(folder_path, changes)
         files_to_process = changes["new_files"] + changes["modified_files"]
+        removed_files = changes.get("removed_files", [])
+        removed_suffix = f". {_removed_files_note(len(removed_files))}" if removed_files else ""
 
         if not files_to_process:
             # A completed scan is a successful sync even when it found no work.
             # Persisting this timestamp makes the UI's "last successful sync"
             # truthful for empty and already-current folders as well.
             manager.update_folder_sync_state(kb_name, folder_id, [])
+            _record_reported_removals(manager, kb_name, folder_id, removed_files)
             return SyncFolderResponse(
-                message="No new or modified files to sync",
+                message=f"No new or modified files to sync{removed_suffix}",
                 folder_path=folder_path,
                 files=[],
                 new_files=0,
                 modified_files=0,
                 file_count=0,
                 task_id=None,
+                removed=removed_files,
+                removed_files=len(removed_files),
             )
 
         logger.info(
             f"Syncing {len(files_to_process)} files from folder '{folder_path}' to KB '{kb_name}'"
         )
-        task_id = _build_unique_task_id("kb_upload", f"{kb_name}_folder_{folder_id}")
-        get_task_stream_manager().ensure_task(task_id)
+        # Refuse a second run instead of queueing one: two indexing runs against
+        # the same source race on the same raw paths and the same sync state.
+        sync_lock = FolderSyncLock.acquire(Path(kb_base_dir) / kb_name, folder_id)
+        if sync_lock is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A sync of '{folder_path}' is already running. "
+                    "Wait for it to finish before syncing this folder again."
+                ),
+            )
+        # Everything a sync needs before the background task owns the lock sits
+        # in one guard. The lock is handed to that task, so releasing it from
+        # here is only correct once the task exists; any failure before that -
+        # a task id, the progress entry, the queueing bookkeeping, the indexing
+        # snapshot - has to give the lock back or the source answers 409 to
+        # every later sync for the life of the process.
+        try:
+            task_id = _build_unique_task_id("kb_upload", f"{kb_name}_folder_{folder_id}")
+            get_task_stream_manager().ensure_task(task_id)
 
-        # NOTE: We DO NOT update sync state here anymore.
-        # It is updated in run_upload_processing_task only after successful processing.
-        # This prevents marking files as synced if processing fails (race condition fix).
+            # NOTE: We DO NOT update sync state here anymore.
+            # It is updated in run_upload_processing_task only after successful processing.
+            # This prevents marking files as synced if processing fails (race condition fix).
 
-        _mark_kb_queued_for_processing(
-            manager,
-            kb_name,
-            task_id,
-            f"Syncing {len(files_to_process)} file(s) from linked folder...",
-        )
+            _mark_kb_queued_for_processing(
+                manager,
+                kb_name,
+                task_id,
+                f"Syncing {len(files_to_process)} file(s) from linked folder...",
+            )
 
-        # Add background task to process files
-        accepted_snapshot = _freeze_append_indexing(kb_name, kb_base_dir, kb_provider)
-        background_tasks.add_task(
-            run_upload_processing_task,
-            accepted_indexing_snapshot=accepted_snapshot,
-            kb_name=kb_name,
-            base_dir=str(kb_base_dir),
-            uploaded_file_paths=files_to_process,
-            task_id=task_id,
-            rag_provider=kb_provider,
-            folder_id=folder_id,  # Pass folder_id to update state on success
-            folder_root=folder_path,  # Preserve each file's path relative to this root
-            owner=get_current_user(),
-            storage_workspace_id=storage_workspace_id,
-        )
+            # Add background task to process files
+            accepted_snapshot = _freeze_append_indexing(kb_name, kb_base_dir, kb_provider)
+            background_tasks.add_task(
+                _run_folder_sync_task,
+                sync_lock=sync_lock,
+                accepted_indexing_snapshot=accepted_snapshot,
+                kb_name=kb_name,
+                base_dir=str(kb_base_dir),
+                uploaded_file_paths=files_to_process,
+                task_id=task_id,
+                rag_provider=kb_provider,
+                folder_id=folder_id,  # Pass folder_id to update state on success
+                folder_root=folder_path,  # Preserve each file's path relative to this root
+                owner=get_current_user(),
+                storage_workspace_id=storage_workspace_id,
+            )
+        except BaseException:
+            # Nothing was queued, so the source must not stay locked.
+            sync_lock.release()
+            raise
+
+        _record_reported_removals(manager, kb_name, folder_id, removed_files)
 
         return SyncFolderResponse(
-            message=f"Syncing {len(files_to_process)} files from linked folder",
+            message=f"Syncing {len(files_to_process)} files from linked folder{removed_suffix}",
             folder_path=folder_path,
             files=files_to_process,
             new_files=changes["new_count"],
             modified_files=changes["modified_count"],
             file_count=len(files_to_process),
             task_id=task_id,
+            removed=removed_files,
+            removed_files=len(removed_files),
         )
     except (HTTPException, AccessError):
         raise

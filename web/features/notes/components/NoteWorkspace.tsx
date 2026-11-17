@@ -14,11 +14,15 @@ import {
   reviewSuggestion,
   noteRequest,
   exportNoteFlashcards,
+  importFiles,
+  type ImportDestination,
   type NoteBlock,
+  type NoteImportResult,
   type NotePage,
   type NoteSummary,
   type NoteSuggestion,
 } from '@/lib/notes-api'
+import { listNotebooks } from '@/lib/notebook-api'
 import { exportCoWriterDocx } from '@/lib/co-writer-api'
 import { notifyCoWriterChanged } from '@/lib/co-writer-events'
 import { browserStorage } from '@/shared/storage'
@@ -29,11 +33,14 @@ import NotePageTree from './NotePageTree'
 import './note-workspace.css'
 import NotePageHead from './NotePageHead'
 import NoteTopBar, { type NoteSaveStatus } from './NoteTopBar'
+import ImportDropSurface from './ImportDropSurface'
+import ImportResultPanel from './ImportResultPanel'
 import NoteOutline from './NoteOutline'
 import { blockLineCenter } from './NoteThreadMarkers'
 import { foldIntoOrb } from '../model/fold-motion'
 import { useNoteThreads } from './useNoteThreads'
 import { pageDescendants } from '../model/page-tree'
+import { importRequestFor } from '../model/import-destinations'
 import { inlineText } from '../model/threads'
 import { learningKind } from '../model/learning-kinds'
 const Editor = dynamic(() => import('./NoteEditor'), {
@@ -61,6 +68,21 @@ export default function NoteWorkspace({
   const [page, setPage] = useState<NotePage | null>(null)
   const [pages, setPages] = useState<NoteSummary[]>([])
   const [error, setError] = useState('')
+  // One line describing what a batch import did; empty when it fully landed.
+  const [importNotice, setImportNotice] = useState('')
+  // The unified drop surface's own state: where the drop goes, the name the two
+  // stores that cannot infer one need, and the grouped outcome to report.
+  const [importDestination, setImportDestination] = useState<ImportDestination>('auto')
+  const [importTarget, setImportTarget] = useState('')
+  const [importResult, setImportResult] = useState<NoteImportResult | null>(null)
+  // The import panel is a dialog the toolbar opens; it holds no page chrome, so
+  // an untouched page keeps its own top edge.
+  const [importOpen, setImportOpen] = useState(false)
+  // Collections are notebooks behind the shared import endpoint, addressed by an
+  // id the page cannot guess, so the panel lists the real ones instead of
+  // asking the user to type one.
+  const [importCollections, setImportCollections] = useState<{ id: string; name: string }[]>([])
+  const [importCollectionId, setImportCollectionId] = useState('')
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<NoteSaveStatus>('Saved')
   const [tree, setTreeOpen] = useState(false)
@@ -106,6 +128,26 @@ export default function NoteWorkspace({
       .then(r => setPages(r.documents))
       .catch(e => setError(String(e)))
   }, [])
+  // The collection destination needs the real ids, and the list is small enough
+  // to fetch when the panel opens rather than cache across the page.
+  useEffect(() => {
+    if (!importOpen) return
+    let cancelled = false
+    void listNotebooks()
+      .then(list => {
+        if (cancelled) return
+        setImportCollections(
+          list.filter(item => !item.unreadable).map(item => ({ id: item.id, name: item.name }))
+        )
+      })
+      .catch(() => {
+        if (cancelled) return
+        setImportCollections([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [importOpen])
   const persistDraft = useCallback(() => {
     if (draftKey && latest.current)
       browserStorage.writeRaw(
@@ -503,6 +545,33 @@ export default function NoteWorkspace({
       setError(String(err))
     }
   }
+  // The unified drop surface's one import path. Files go wherever the picked
+  // destination says: `auto` lets the server route each file by type, and the
+  // grouped response says where each one went instead of one flat count.
+  // An empty target is left out of the request rather than guessed at; the
+  // per-file reasons then say which store was missing.
+  const importFilesInto = async (files: File[]) => {
+    setMutating(true)
+    setImportNotice('')
+    setImportResult(null)
+    try {
+      await flush()
+      const result = await importFiles(
+        files,
+        importRequestFor(importDestination, {
+          target: importTarget,
+          collectionId: importCollectionId,
+        })
+      )
+      refreshPages()
+      notifyCoWriterChanged()
+      setImportResult(result)
+    } catch (err) {
+      setImportNotice(String(err))
+    } finally {
+      setMutating(false)
+    }
+  }
   const invalidParents = pageDescendants(pages, docId)
   const createPage = async (parentId: string | null = null) => {
     setMutating(true)
@@ -587,7 +656,33 @@ export default function NoteWorkspace({
         onMetadata={patch => void metadata(patch)}
         onInsertFavorite={() => setFavorites(true)}
         onExport={format => void exportFile(format)}
+        onOpenImport={() => setImportOpen(true)}
       />
+      <ImportDropSurface
+        open={importOpen}
+        onOpen={() => setImportOpen(true)}
+        onClose={() => setImportOpen(false)}
+        destination={importDestination}
+        onDestination={setImportDestination}
+        target={importTarget}
+        onTarget={setImportTarget}
+        collections={importCollections}
+        collectionId={importCollectionId}
+        onCollection={setImportCollectionId}
+        onFiles={files => void importFilesInto(files)}
+        busy={mutating}
+      />
+      {importResult && (
+        <ImportResultPanel result={importResult} onDismiss={() => setImportResult(null)} />
+      )}
+      {importNotice && (
+        <div className="dt-note-banner" role="status">
+          <span className="flex-1">{importNotice}</span>
+          <button className="dt-note-button" onClick={() => setImportNotice('')}>
+            {t('Dismiss')}
+          </button>
+        </div>
+      )}
       {error && (
         <div role="alert" className="dt-note-banner is-error">
           <span className="flex-1">{error}</span>

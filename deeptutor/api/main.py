@@ -298,11 +298,29 @@ async def lifespan(app: FastAPI):
         logger.warning(f"v1 memory migration failed: {e}")
 
     app.state.ready = True
+
+    # After startup completes, never during it: a folder sync can index for
+    # minutes, and nothing on this path waits for it or fails with it (#9).
+    # schedule_startup_folder_sync() only creates the task; the sync itself
+    # runs beside the served application.
+    try:
+        from deeptutor.api.startup_folder_sync import schedule_startup_folder_sync
+
+        schedule_startup_folder_sync()
+    except Exception:
+        logger.warning("Failed to schedule the startup folder sync", exc_info=True)
     yield
 
     # Execute on shutdown
     app.state.ready = False
     logger.info("Application shutdown")
+
+    try:
+        from deeptutor.api.startup_folder_sync import cancel_startup_folder_sync
+
+        await cancel_startup_folder_sync()
+    except Exception as e:
+        logger.warning(f"Failed to stop the startup folder sync: {e}")
 
     if module_enabled("knowledge"):
         install_progress_ports(broadcast=None, emit_task_event=None)

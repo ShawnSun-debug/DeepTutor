@@ -2197,6 +2197,43 @@ export interface paths {
     readonly patch?: never;
     readonly trace?: never;
   };
+  readonly "/api/imports/documents": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    readonly get?: never;
+    readonly put?: never;
+    /**
+     * Import Documents
+     * @description Import a batch of files and report one outcome per file.
+     *
+     *     A bad file never fails the batch: it gets its own skipped or failed entry
+     *     and the rest still import. Only a malformed request — no files, too many
+     *     files, an unknown destination, a destination missing the thing it names —
+     *     is an HTTP error, because there is nothing per-file to report for it.
+     *
+     *     `target` names the instance inside the destination: the knowledge base to
+     *     import into. It is used verbatim, never case-folded, because a
+     *     knowledge-base name is user data (see the note above `_IMPORTERS`).
+     *
+     *     `destination="auto"` routes each file by type instead of sending the whole
+     *     batch to one store: HTML and (without named collections) Markdown and plain
+     *     text become notes, Markdown and plain text with named collections become
+     *     records, and everything the knowledge-base engine accepts goes to the named
+     *     knowledge base. The routing table and its reasoning live above
+     *     `_knowledge_base_extensions`. Every file still reports the store it
+     *     actually landed in, and `groups` rolls those results up per destination.
+     */
+    readonly post: operations["import_documents_api_imports_documents_post"];
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
   readonly "/api/knowledge-bases": {
     readonly parameters: {
       readonly query?: never;
@@ -2716,8 +2753,13 @@ export interface paths {
      * Sync Folder
      * @description Sync files from a linked folder to the knowledge base.
      *
-     *     This scans the linked folder for supported documents and processes
-     *     any new files that haven't been added yet.
+     *     Indexes the files added or modified since the last sync and leaves the
+     *     others alone. Files the folder no longer provides are reported in the
+     *     response and stay in the knowledge base: deleting an imported document
+     *     remains an explicit action. A source that has gone missing, or that lost
+     *     every supported file it used to provide, is refused instead of reported as
+     *     a successful sync, and a second sync of a source that is already running is
+     *     refused rather than started twice.
      */
     readonly post: operations["sync_folder_api_knowledge_bases__kb_name__sync_folder__folder_id__post"];
     readonly delete?: never;
@@ -3135,9 +3177,17 @@ export interface paths {
      * Connect Obsidian Vault
      * @description Connect an existing Obsidian vault as a knowledge base.
      *
-     *     Registers a pointer to the user's vault directory (``type: obsidian``) — no
-     *     upload, no index. The vault must be a directory the server can reach (i.e. a
-     *     local/self-hosted deployment); the Obsidian capability reads it live.
+     *     Two modes, both independent so they may be registered for one vault at once:
+     *
+     *     * ``live`` (default) registers a pointer to the user's vault directory
+     *       (``type: obsidian``) — no upload, no index. The Obsidian capability reads it
+     *       live, and the ``rag`` tool cannot retrieve from it.
+     *     * ``indexed`` creates a real retrievable knowledge base on the default
+     *       LlamaIndex pipeline, registers the vault directory as a linked folder
+     *       source, and queues the first sync.
+     *
+     *     The vault must be an existing directory the server can reach (i.e. a
+     *     local/self-hosted deployment); that is checked before anything is registered.
      */
     readonly post: operations["connect_obsidian_vault_api_knowledge_bases_connect_obsidian_post"];
     readonly delete?: never;
@@ -12040,7 +12090,8 @@ export interface components {
         | "co_writer"
         | "tutorbot"
         | "reading"
-        | "video_learning";
+        | "video_learning"
+        | "import";
       /**
        * Summary
        * @default
@@ -12499,6 +12550,25 @@ export interface components {
       readonly search_mode: string;
       /** Storage Workspace Id */
       readonly storage_workspace_id?: string | null;
+    };
+    /** Body_import_documents_api_imports_documents_post */
+    readonly Body_import_documents_api_imports_documents_post: {
+      /**
+       * Collection Ids
+       * @default []
+       */
+      readonly collection_ids: readonly string[];
+      /**
+       * Destination
+       * @default authored_page
+       */
+      readonly destination: string;
+      /** Files */
+      readonly files?: readonly string[] | null;
+      /** Parent Id */
+      readonly parent_id?: string | null;
+      /** Target */
+      readonly target?: string | null;
     };
     /** Body_import_docx_api_documents_import_docx_post */
     readonly Body_import_docx_api_documents_import_docx_post: {
@@ -13424,6 +13494,11 @@ export interface components {
     };
     /** ConnectObsidianRequest */
     readonly ConnectObsidianRequest: {
+      /**
+       * Mode
+       * @default live
+       */
+      readonly mode: string;
       /** Name */
       readonly name: string;
       /** Vault Path */
@@ -13946,6 +14021,28 @@ export interface components {
       readonly api_base_url: string;
       /** Api Token */
       readonly api_token?: string | null;
+    };
+    /**
+     * DocumentImportResponse
+     * @description One outcome per file, plus the batch totals a UI shows.
+     */
+    readonly DocumentImportResponse: {
+      /** Destination */
+      readonly destination: string;
+      /** Failed */
+      readonly failed: number;
+      /** Files */
+      readonly files: readonly components["schemas"]["ImportFileResult"][];
+      /** Groups */
+      readonly groups?: {
+        readonly [key: string]: components["schemas"]["ImportDestinationGroup"];
+      };
+      /** Imported */
+      readonly imported: number;
+      /** Skipped */
+      readonly skipped: number;
+      /** Task Id */
+      readonly task_id?: string | null;
     };
     /**
      * DocumentParsingInstall
@@ -14526,6 +14623,24 @@ export interface components {
       /** Name */
       readonly name: string;
     };
+    /**
+     * ImportDestinationGroup
+     * @description One destination's share of a batch, so a UI can render it as a section.
+     */
+    readonly ImportDestinationGroup: {
+      /** Destination */
+      readonly destination: string;
+      /** Failed */
+      readonly failed: number;
+      /** Files */
+      readonly files: number;
+      /** Imported */
+      readonly imported: number;
+      /** Skipped */
+      readonly skipped: number;
+      /** Task Id */
+      readonly task_id?: string | null;
+    };
     /** ImportedMessage */
     readonly ImportedMessage: {
       /**
@@ -14562,6 +14677,31 @@ export interface components {
       readonly title: string;
       /** Updated At */
       readonly updated_at: number;
+    };
+    /**
+     * ImportFileResult
+     * @description What happened to one file. Every destination reports through this.
+     */
+    readonly ImportFileResult: {
+      /** Collection Ids */
+      readonly collection_ids?: readonly string[] | null;
+      /** Destination */
+      readonly destination: string;
+      /** Document Id */
+      readonly document_id?: string | null;
+      /** Filename */
+      readonly filename: string;
+      /**
+       * Outcome
+       * @enum {string}
+       */
+      readonly outcome: "imported" | "skipped" | "failed";
+      /** Reason */
+      readonly reason?: string | null;
+      /** Record Id */
+      readonly record_id?: string | null;
+      /** Stored Paths */
+      readonly stored_paths?: readonly string[] | null;
     };
     /** ImportFromBookRequest */
     readonly ImportFromBookRequest: {
@@ -17506,6 +17646,9 @@ export interface components {
     /**
      * SyncFolderResponse
      * @description Response model for a linked-folder sync request.
+     *
+     *     Quirky but kept: new_files/modified_files/removed_files are counts while
+     *     files/removed are the matching paths.
      */
     readonly SyncFolderResponse: {
       /** File Count */
@@ -17520,6 +17663,13 @@ export interface components {
       readonly modified_files: number;
       /** New Files */
       readonly new_files: number;
+      /** Removed */
+      readonly removed?: readonly string[];
+      /**
+       * Removed Files
+       * @default 0
+       */
+      readonly removed_files: number;
       /** Task Id */
       readonly task_id: string | null;
     };
@@ -19095,6 +19245,8 @@ export type SchemaBodyAdminImportUsersApiAuthUsersImportPost =
   components["schemas"]["Body_admin_import_users_api_auth_users_import_post"];
 export type SchemaBodyCreateKnowledgeBaseApiKnowledgeBasesPost =
   components["schemas"]["Body_create_knowledge_base_api_knowledge_bases_post"];
+export type SchemaBodyImportDocumentsApiImportsDocumentsPost =
+  components["schemas"]["Body_import_documents_api_imports_documents_post"];
 export type SchemaBodyImportDocxApiDocumentsImportDocxPost =
   components["schemas"]["Body_import_docx_api_documents_import_docx_post"];
 export type SchemaBodyImportPreviewApiQuestionNotebookPracticeImportPreviewPost =
@@ -19258,6 +19410,8 @@ export type SchemaDeviceLoginRequest =
 export type SchemaDisplaySettings = components["schemas"]["DisplaySettings"];
 export type SchemaDoclingRemoteTest =
   components["schemas"]["DoclingRemoteTest"];
+export type SchemaDocumentImportResponse =
+  components["schemas"]["DocumentImportResponse"];
 export type SchemaDocumentParsingInstall =
   components["schemas"]["DocumentParsingInstall"];
 export type SchemaDocumentParsingTest =
@@ -19325,8 +19479,11 @@ export type SchemaImageDescriptionModelSelection =
   components["schemas"]["ImageDescriptionModelSelection"];
 export type SchemaImaKnowledgeBaseSummary =
   components["schemas"]["ImaKnowledgeBaseSummary"];
+export type SchemaImportDestinationGroup =
+  components["schemas"]["ImportDestinationGroup"];
 export type SchemaImportedMessage = components["schemas"]["ImportedMessage"];
 export type SchemaImportedSession = components["schemas"]["ImportedSession"];
+export type SchemaImportFileResult = components["schemas"]["ImportFileResult"];
 export type SchemaImportFromBookRequest =
   components["schemas"]["ImportFromBookRequest"];
 export type SchemaIndexingLlmSelectionRequest =
@@ -24651,6 +24808,43 @@ export interface operations {
           readonly "application/json": {
             readonly [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly import_documents_api_imports_documents_post: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path?: never;
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: {
+      readonly content: {
+        readonly "multipart/form-data": components["schemas"]["Body_import_documents_api_imports_documents_post"];
+      };
+    };
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["DocumentImportResponse"];
         };
       };
       /** @description Validation Error */

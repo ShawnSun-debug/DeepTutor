@@ -562,6 +562,124 @@ button.dt-note-tree-toggle:hover {
   background: color-mix(in srgb, #ef4444 8%, var(--background));
   color: #b91c1c;
 }
+/* ---- Unified import panel -------------------------------------------- */
+/* The drop hint while a file is over the page: no layout, just a surface that
+   says letting go is safe. Pointer events stay off it so it never eats a drop. */
+.dt-note-import-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(15 15 15 / 0.38);
+  pointer-events: none;
+}
+.dt-note-import-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 22px;
+  border-radius: 12px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--dt-shadow-md, 0 10px 30px rgb(0 0 0 / 0.18));
+  font-size: 13px;
+}
+/* The panel's dialog sheet, opened from the toolbar or by a drop. */
+.dt-note-import-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: rgb(15 15 15 / 0.32);
+}
+.dt-note-import-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(34rem, 100%);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--dt-radius-lg, 10px);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--dt-shadow-md, 0 10px 30px rgb(0 0 0 / 0.18));
+  font-size: 13px;
+}
+.dt-note-import-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dt-note-import-head > span {
+  flex: 1;
+  font-weight: 600;
+}
+.dt-note-import-destinations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dt-note-import-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.dt-note-import-field > span {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.dt-note-import-target,
+.dt-note-import-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--dt-radius-sm, 6px);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+.dt-note-import-target:focus-visible,
+.dt-note-import-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+.dt-note-import-target:disabled,
+.dt-note-import-select:disabled {
+  opacity: 0.5;
+}
+.dt-note-import-empty {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.dt-note-import-staged {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-note-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dt-note-import-actions .dt-note-button:last-child {
+  margin-left: auto;
+}
+.dt-note-import-group > span:first-child {
+  font-weight: 600;
+}
 .dt-note-backlinks {
   margin-top: 40px;
   padding: 16px var(--note-gutter) 0;

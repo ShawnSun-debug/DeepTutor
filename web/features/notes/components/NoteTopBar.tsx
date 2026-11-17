@@ -11,6 +11,7 @@ import {
   CornerUpRight,
   FileDown,
   FileText,
+  FileUp,
   MoreHorizontal,
   PanelLeft,
   Pin,
@@ -63,6 +64,7 @@ export default function NoteTopBar({
   onMetadata,
   onInsertFavorite,
   onExport,
+  onOpenImport,
 }: {
   page: NotePage | null
   pages: NoteSummary[]
@@ -81,6 +83,8 @@ export default function NoteTopBar({
   onMetadata: (patch: Partial<NotePage>) => void
   onInsertFavorite: () => void
   onExport: (format: 'md' | 'docx' | 'anki') => void
+  /** Opens the import panel, which owns the file picker and the destination. */
+  onOpenImport: () => void
 }) {
   const { t } = useTranslation()
   const feature = useShelfFeature('/co-writer')
@@ -289,6 +293,18 @@ export default function NoteTopBar({
                   {t('Insert favorite')}
                 </button>
                 <div className="dt-menu-divider" />
+                <button
+                  role="menuitem"
+                  className="dt-menu-item"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpen(false)
+                    onOpenImport()
+                  }}
+                >
+                  <FileUp size={14} />
+                  {t('Import')}
+                </button>
                 <button
                   role="menuitem"
                   className="dt-menu-item"

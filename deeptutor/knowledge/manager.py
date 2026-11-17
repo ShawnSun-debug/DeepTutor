@@ -2137,7 +2137,7 @@ class KnowledgeBaseManager:
 
     def detect_folder_changes(self, kb_name: str, folder_id: str) -> dict:
         """
-        Detect new and modified files in a linked folder since last sync.
+        Detect new, modified and removed files in a linked folder since last sync.
 
         This enables automatic sync of changes from local folders that may
         be synced with cloud services like SharePoint, Google Drive, etc.
@@ -2147,7 +2147,11 @@ class KnowledgeBaseManager:
             folder_id: Folder ID to check for changes
 
         Returns:
-            Dict with 'new_files', 'modified_files', and 'has_changes' keys
+            Dict with 'new_files', 'modified_files' and 'removed_files' (tracked
+            source paths the folder no longer provides), their counts,
+            'has_changes', plus the scan facts a caller needs to tell "nothing
+            new yet" apart from "this folder is gone or empty": 'folder_exists',
+            'scanned_count' and 'tracked_count'.
         """
         if kb_name not in self.list_knowledge_bases():
             raise ValueError(f"Knowledge base not found: {kb_name}")
@@ -2161,15 +2165,29 @@ class KnowledgeBaseManager:
 
         folder_path = Path(folder_info["path"]).expanduser().resolve()
         synced_files = folder_info.get("synced_files", {})
+        tracked_files = set(synced_files)
+        # collect_supported_files() yields nothing for a path that is gone, so
+        # existence is recorded separately: an empty result is otherwise
+        # indistinguishable from a successful scan that found no work.
+        try:
+            folder_exists = folder_path.is_dir()
+        except OSError:
+            # is_dir() only swallows "not found"-class errors, and a source that
+            # fails to stat (unmounted share, racing delete) is just as unusable.
+            folder_exists = False
+        # Keep the collected Path objects: re-instantiating them through the
+        # module-level Path would lose whatever the caller provided.
+        collected_files = FileTypeRouter.collect_supported_files(folder_path, recursive=True)
+        present_files = sorted(str(file_path) for file_path in collected_files)
 
         new_files = []
         modified_files = []
 
-        for file_path in FileTypeRouter.collect_supported_files(folder_path, recursive=True):
+        for file_path in collected_files:
             file_str = str(file_path)
             file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
 
-            if file_str in synced_files:
+            if file_str in tracked_files:
                 # Check if modified since last sync
                 prev_mtime_str = synced_files[file_str]
                 try:
@@ -2182,12 +2200,22 @@ class KnowledgeBaseManager:
                 # New file (not in synced files)
                 new_files.append(file_str)
 
+        # Detection only. Removing an imported document stays an explicit user
+        # action, so a sync never deletes one on the folder's behalf.
+        present = set(present_files)
+        removed_files = sorted(path for path in tracked_files if path not in present)
+
         return {
             "new_files": sorted(new_files),
             "modified_files": sorted(modified_files),
+            "removed_files": removed_files,
             "has_changes": len(new_files) > 0 or len(modified_files) > 0,
             "new_count": len(new_files),
             "modified_count": len(modified_files),
+            "removed_count": len(removed_files),
+            "folder_exists": folder_exists,
+            "scanned_count": len(present_files),
+            "tracked_count": len(tracked_files),
         }
 
     def update_folder_sync_state(
@@ -2256,6 +2284,49 @@ class KnowledgeBaseManager:
                 folder["file_count"] = len(file_states)
                 atomic_write_json(metadata_file, metadata)
                 break
+
+    def prune_folder_sync_state(
+        self, kb_name: str, folder_id: str, removed_files: list[str]
+    ) -> None:
+        """Forget tracked source paths the folder no longer provides.
+
+        Change detection keys its state by source path, so a path left in
+        "synced_files" is re-reported as removed by every later scan. A removal
+        is reported to the caller exactly once, after which the path leaves the
+        tracked set. This is not a delete: the imported copy stays in the
+        knowledge base, because deleting it would let an unmounted network
+        share silently destroy documents.
+        """
+        if not removed_files:
+            return
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+
+        kb_dir = self.base_dir / kb_name
+        metadata_file = kb_dir / "metadata.json"
+
+        if not metadata_file.exists():
+            return
+
+        try:
+            with open(metadata_file, encoding="utf-8") as f:
+                metadata = json.load(f)
+        except Exception:
+            return
+
+        for folder in metadata.get("linked_folders", []):
+            if folder.get("id") != folder_id:
+                continue
+            file_states = folder.get("synced_files", {})
+            gone = [path for path in removed_files if path in file_states]
+            if not gone:
+                return
+            for path in gone:
+                del file_states[path]
+            folder["synced_files"] = file_states
+            folder["file_count"] = len(file_states)
+            atomic_write_json(metadata_file, metadata)
+            return
 
     # ------------------------------------------------------------------
     # GitHub source management
