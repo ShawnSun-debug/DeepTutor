@@ -43,6 +43,7 @@ function page(blocks: NoteBlock[] | null): NotePage {
 
 function openMenu(blocks: NoteBlock[] | null) {
   const onExport = vi.fn()
+  const onOpenImport = vi.fn()
   render(
     <NoteTopBar
       page={page(blocks)}
@@ -61,11 +62,11 @@ function openMenu(blocks: NoteBlock[] | null) {
       onMetadata={vi.fn()}
       onInsertFavorite={vi.fn()}
       onExport={onExport}
-      onImport={vi.fn()}
+      onOpenImport={onOpenImport}
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'More page actions' }))
-  return onExport
+  return { onExport, onOpenImport }
 }
 
 it('hides Export flashcards (Anki) when the page has no flashcard block', () => {
@@ -74,7 +75,7 @@ it('hides Export flashcards (Anki) when the page has no flashcard block', () => 
 })
 
 it('shows Export flashcards (Anki) for nested flashcard blocks and exports as anki', () => {
-  const onExport = openMenu([
+  const { onExport } = openMenu([
     {
       id: 'cols',
       type: 'noteColumns',
@@ -105,11 +106,10 @@ it('detects nested flashcard blocks and ignores other learning kinds', () => {
   ).toBe(false)
   expect(pageHasFlashcards(null)).toBe(false)
 })
-it('offers every importable note format in the file picker', () => {
-  openMenu(null)
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement
-  expect(input).not.toBeNull()
-  expect(input.accept.split(",")).toEqual(
-    expect.arrayContaining(['.md', '.markdown', '.mdown', '.txt', '.html', '.htm']),
-  )
+it('opens the import panel from the page menu and holds no file picker of its own', () => {
+  const { onOpenImport } = openMenu(null)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Import' }))
+  expect(onOpenImport).toHaveBeenCalledOnce()
+  // The picker, with its accept list, lives in the panel the callback opens.
+  expect(document.querySelector('input[type="file"]')).toBeNull()
 })
