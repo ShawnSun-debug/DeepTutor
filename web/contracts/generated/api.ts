@@ -2212,8 +2212,12 @@ export interface paths {
      *
      *     A bad file never fails the batch: it gets its own skipped or failed entry
      *     and the rest still import. Only a malformed request — no files, too many
-     *     files, an unknown destination — is an HTTP error, because there is nothing
-     *     per-file to report for it.
+     *     files, an unknown destination, a destination missing the thing it names —
+     *     is an HTTP error, because there is nothing per-file to report for it.
+     *
+     *     `target` names the instance inside the destination: the knowledge base to
+     *     import into. It is used verbatim, never case-folded, because a
+     *     knowledge-base name is user data (see the note above `_IMPORTERS`).
      */
     readonly post: operations["import_documents_api_imports_documents_post"];
     readonly delete?: never;
@@ -12555,6 +12559,8 @@ export interface components {
       readonly files?: readonly string[] | null;
       /** Parent Id */
       readonly parent_id?: string | null;
+      /** Target */
+      readonly target?: string | null;
     };
     /** Body_import_docx_api_documents_import_docx_post */
     readonly Body_import_docx_api_documents_import_docx_post: {
@@ -14662,6 +14668,8 @@ export interface components {
       readonly reason?: string | null;
       /** Record Id */
       readonly record_id?: string | null;
+      /** Stored Paths */
+      readonly stored_paths?: readonly string[] | null;
     };
     /** ImportFromBookRequest */
     readonly ImportFromBookRequest: {
