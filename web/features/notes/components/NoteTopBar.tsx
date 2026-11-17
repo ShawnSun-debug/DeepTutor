@@ -83,7 +83,7 @@ export default function NoteTopBar({
   onMetadata: (patch: Partial<NotePage>) => void
   onInsertFavorite: () => void
   onExport: (format: 'md' | 'docx' | 'anki') => void
-  /** Receives the Markdown files the user picked; one page per file. */
+  /** Receives the files the user picked; the drop surface decides where each one goes. */
   onImport: (files: File[]) => void
 }) {
   const { t } = useTranslation()

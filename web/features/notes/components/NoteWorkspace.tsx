@@ -14,8 +14,10 @@ import {
   reviewSuggestion,
   noteRequest,
   exportNoteFlashcards,
-  importMarkdownNotes,
+  importFiles,
+  type ImportDestination,
   type NoteBlock,
+  type NoteImportResult,
   type NotePage,
   type NoteSummary,
   type NoteSuggestion,
@@ -30,6 +32,8 @@ import NotePageTree from './NotePageTree'
 import './note-workspace.css'
 import NotePageHead from './NotePageHead'
 import NoteTopBar, { type NoteSaveStatus } from './NoteTopBar'
+import ImportDropSurface from './ImportDropSurface'
+import ImportResultPanel from './ImportResultPanel'
 import NoteOutline from './NoteOutline'
 import { blockLineCenter } from './NoteThreadMarkers'
 import { foldIntoOrb } from '../model/fold-motion'
@@ -64,6 +68,11 @@ export default function NoteWorkspace({
   const [error, setError] = useState('')
   // One line describing what a batch import did; empty when it fully landed.
   const [importNotice, setImportNotice] = useState('')
+  // The unified drop surface's own state: where the drop goes, the name the two
+  // stores that cannot infer one need, and the grouped outcome to report.
+  const [importDestination, setImportDestination] = useState<ImportDestination>('auto')
+  const [importTarget, setImportTarget] = useState('')
+  const [importResult, setImportResult] = useState<NoteImportResult | null>(null)
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<NoteSaveStatus>('Saved')
   const [tree, setTreeOpen] = useState(false)
@@ -506,26 +515,26 @@ export default function NoteWorkspace({
       setError(String(err))
     }
   }
-  // Markdown files land as ordinary pages at the top level. The response is
-  // per file, so a single bad file is reported instead of failing the batch.
-  const importMarkdown = async (files: File[]) => {
+  // The unified drop surface's one import path. Files go wherever the picked
+  // destination says: `auto` lets the server route each file by type, and the
+  // grouped response says where each one went instead of one flat count.
+  // An empty target is left out of the request rather than guessed at; the
+  // per-file reasons then say which store was missing.
+  const importFilesInto = async (files: File[]) => {
     setMutating(true)
     setImportNotice('')
+    setImportResult(null)
     try {
       await flush()
-      const result = await importMarkdownNotes(files)
+      const target = importTarget.trim()
+      const result = await importFiles(files, {
+        destination: importDestination,
+        collectionIds: importDestination === 'collection' && target ? [target] : [],
+        target: importDestination === 'knowledge_base' && target ? target : null,
+      })
       refreshPages()
       notifyCoWriterChanged()
-      const missed = result.files.filter(item => item.outcome !== 'imported')
-      setImportNotice(
-        missed.length
-          ? `${t('Imported')} ${result.imported} / ${result.files.length}. ` +
-            missed
-              .slice(0, 3)
-              .map(item => `${item.filename}: ${item.reason ?? item.outcome}`)
-              .join(' · ')
-          : ''
-      )
+      setImportResult(result)
     } catch (err) {
       setImportNotice(String(err))
     } finally {
@@ -616,8 +625,19 @@ export default function NoteWorkspace({
         onMetadata={patch => void metadata(patch)}
         onInsertFavorite={() => setFavorites(true)}
         onExport={format => void exportFile(format)}
-        onImport={files => void importMarkdown(files)}
+        onImport={files => void importFilesInto(files)}
       />
+      <ImportDropSurface
+        destination={importDestination}
+        onDestination={setImportDestination}
+        target={importTarget}
+        onTarget={setImportTarget}
+        onFiles={files => void importFilesInto(files)}
+        busy={mutating}
+      />
+      {importResult && (
+        <ImportResultPanel result={importResult} onDismiss={() => setImportResult(null)} />
+      )}
       {importNotice && (
         <div className="dt-note-banner" role="status">
           <span className="flex-1">{importNotice}</span>
