@@ -272,6 +272,29 @@ def test_each_file_becomes_its_own_record(client: TestClient, collection: str) -
     assert [record["title"] for record in records] == ["one", "two"]
 
 
+def test_a_utf8_bom_is_not_part_of_the_imported_record(client: TestClient, collection: str) -> None:
+    """A BOM decodes cleanly and stays glued to the text, so it must be dropped.
+
+    ``FileTypeRouter.decode_bytes`` tries utf-8 before utf-8-sig, so a BOM arrives
+    as a leading U+FEFF. The authored-page path already strips it; a record that
+    kept it carried an invisible first character into its body and its summary.
+    """
+    response = _import(
+        client,
+        [_file("bom.md", "\ufeff# Bom\n\nBody.\n".encode())],
+        collection_ids=collection,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["files"][0]["outcome"] == "imported"
+
+    record = client.get(f"/api/notebooks/{collection}").json()["records"][0]
+    assert record["output"] == "# Bom\n\nBody.\n"
+    assert not record["output"].startswith("\ufeff")
+    # The summary is what the collection list shows, so it must not hide one.
+    assert record["summary"] == "Bom"
+    assert not record["summary"].startswith("\ufeff")
+
+
 def test_unsupported_empty_and_oversized_files_keep_their_own_outcome(
     client: TestClient, collection: str
 ) -> None:

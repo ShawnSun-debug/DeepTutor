@@ -465,11 +465,15 @@ def test_a_knowledge_base_format_without_a_target_fails_instead_of_guessing(
     assert landed["ok.md"]["outcome"] == "imported"
     assert landed["ok.md"]["destination"] == "authored_page"
     assert landed["paper.pdf"]["outcome"] == "failed"
-    assert landed["paper.pdf"]["destination"] == "knowledge_base"
+    # The file went nowhere, so it claimed no destination: naming the store it
+    # was refused by would invent a "Knowledge base 0/1" section for it.
+    assert landed["paper.pdf"]["destination"] == ""
     assert "knowledge base" in landed["paper.pdf"]["reason"].lower()
     assert "target" in landed["paper.pdf"]["reason"]
     # The reason is the missing choice, not a format complaint.
     assert "unsupported extension" not in landed["paper.pdf"]["reason"]
+    # Only the note has a group; the refused PDF is ungrouped but still counted.
+    assert set(payload["groups"]) == {"authored_page"}
 
     # Nothing was written and nothing was queued.
     assert recorder.calls == []
@@ -477,15 +481,56 @@ def test_a_knowledge_base_format_without_a_target_fails_instead_of_guessing(
     assert not (_raw(manager) / "paper.pdf").exists()
 
 
-def test_an_unknown_knowledge_base_named_in_auto_mode_is_a_request_error(
-    client: TestClient, manager: KnowledgeBaseManager
+def test_an_unknown_knowledge_base_in_auto_mode_fails_only_its_own_files(
+    client: TestClient, manager: KnowledgeBaseManager, recorder: _TaskRecorder
 ) -> None:
-    """A name that resolves to no knowledge base is a wrong request, not a bad file."""
+    """A wrong knowledge-base name must not fail a request that already wrote.
+
+    The target is resolved before any store is dispatched, so a name that
+    resolves to nothing costs nothing: the Markdown still becomes a page, the
+    PDF fails with the knowledge base's own reason, and a corrected retry cannot
+    duplicate a page the user was never told about.
+    """
     seed_kb(manager)
 
-    response = _auto(client, [_file("paper.pdf", b"%PDF-1.4")], target="missing-kb")
-    assert response.status_code == 404
-    assert "missing-kb" in response.json()["detail"]
+    response = _auto(
+        client,
+        [_file("notes.md", b"# Kept\n\nBody.\n"), _file("paper.pdf", b"%PDF-1.4")],
+        target="missing-kb",
+    )
+    # There is a per-file answer for it, so it is not a request-level error.
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    landed = _by_name(payload)
+    assert landed["notes.md"]["outcome"] == "imported"
+    assert landed["notes.md"]["destination"] == "authored_page"
+    assert landed["paper.pdf"]["outcome"] == "failed"
+    assert landed["paper.pdf"]["destination"] == "knowledge_base"
+    # The reason is the knowledge-base route's own text, not a paraphrase.
+    assert landed["paper.pdf"]["reason"] == "Knowledge base 'missing-kb' not found"
+    # Nothing reached a knowledge base and nothing was queued for one.
+    assert recorder.calls == []
+    assert payload["task_id"] is None
+    # The one page that was written is the one the response reports: the batch
+    # is never half-applied behind a 404.
+    assert len(client.get("/api/documents").json()["documents"]) == 1
+
+
+def test_a_knowledge_base_that_exists_still_takes_the_auto_routed_files(
+    client: TestClient, manager: KnowledgeBaseManager, recorder: _TaskRecorder
+) -> None:
+    """Resolving the target before dispatch must not disturb the working path."""
+    seed_kb(manager)
+
+    response = _auto(client, [_file("paper.pdf", b"%PDF-1.4 ok")], target=KB_NAME)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["imported"] == 1
+    assert payload["files"][0]["outcome"] == "imported"
+    assert (_raw(manager) / "paper.pdf").read_bytes() == b"%PDF-1.4 ok"
+    assert len(recorder.calls) == 1
+    assert payload["groups"]["knowledge_base"]["imported"] == 1
 
 
 def test_an_unknown_collection_in_auto_mode_fails_only_that_file(
@@ -502,6 +547,26 @@ def test_an_unknown_collection_in_auto_mode_fails_only_that_file(
     assert landed["a.md"]["outcome"] == "failed"
     assert "deadbeef" in landed["a.md"]["reason"]
     assert landed["b.html"]["outcome"] == "imported"
+
+
+def test_a_knowledge_base_format_without_a_target_invents_no_group(
+    client: TestClient, manager: KnowledgeBaseManager
+) -> None:
+    """A file that reached no store gets no group; it is reported per file only."""
+    seed_kb(manager)
+
+    response = _auto(client, [_file("paper.pdf", b"%PDF-1.4")])
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    result = payload["files"][0]
+    assert result["outcome"] == "failed"
+    assert result["destination"] == ""
+    assert "target" in result["reason"]
+    # Nothing was created under any destination, so no group exists to describe.
+    assert payload["groups"] == {}
+    assert payload["task_id"] is None
+    assert not (_raw(manager) / "paper.pdf").exists()
 
 
 # ---------------------------------------------------------------------------

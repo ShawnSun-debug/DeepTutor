@@ -95,6 +95,32 @@ _EMPHASIS = {
 # is not understood is transparent, so its children still reach the page.
 _SKIP_TAGS = frozenset({"head", "noscript", "script", "style", "template", "title"})
 
+# Which destinations may become a link. This mirrors
+# SAFE_MARKDOWN_PROTOCOL_REGEX in web/lib/markdown-display.ts, which is what the
+# rendered note applies to every href: the converter is the first of the two
+# layers, so a stored page never carries a scheme the renderer would strip.
+# `attachment` is a real scheme here (generated-file cards), and a relative
+# destination or an #anchor has no scheme at all, so both are always kept.
+_SAFE_LINK_SCHEMES = frozenset({"http", "https", "irc", "ircs", "mailto", "xmpp", "attachment"})
+
+# A scheme as a URL parser reads it: the run of scheme characters before the
+# first colon. Anchored, so a colon after a path/query/fragment separator leaves
+# the destination relative ("./notes/x.md", "?q=a:b", "#a:b").
+_SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.-]*):", re.IGNORECASE)
+
+# Characters a browser strips from a URL before reading its scheme, so a scheme
+# hidden behind one of them is the same scheme and must be judged as it.
+_URL_NOISE_RE = re.compile(r"[\x00-\x20\x7f]+")
+
+# The one scheme-bearing destination an image may carry, mirroring
+# SAFE_RASTER_DATA_IMAGE_REGEX in web/lib/markdown-display.ts. A saved page's
+# inline screenshot is passive raster data and worth keeping; `data:text/html`
+# is markup smuggled through a URL and `data:image/svg+xml` can carry script.
+_SAFE_IMAGE_DATA_RE = re.compile(
+    r"^data:image/(?:png|jpe?g|gif|webp|bmp|tiff?|avif);base64,[a-z0-9+/=\s]+$",
+    re.IGNORECASE,
+)
+
 _INDENT = "  "
 
 
@@ -151,6 +177,12 @@ class _HtmlToMarkdown(HTMLParser):
         if self._in_pre:
             # An unclosed <pre> would otherwise swallow everything after it.
             self._end_pre()
+        if self._table is not None:
+            # Same for a table: `</table>` is the only thing that used to emit
+            # one, so a table that was never closed (or a file truncated inside
+            # it) dropped every cell it had collected while the file still
+            # reported `imported`. The rows are the only copy of that content.
+            self._end_table()
         self._flush()
         parts: list[str] = []
         previous: int | None = None
@@ -210,6 +242,10 @@ class _HtmlToMarkdown(HTMLParser):
             self._in_pre = True
             self._pre_parts = []
         elif tag == "table":
+            if self._table is not None:
+                # Tables do not nest. Emitting the open one keeps the rows it
+                # already collected instead of losing them to the reset below.
+                self._end_table()
             self._flush()
             self._table = []
             self._row = None
@@ -319,8 +355,12 @@ class _HtmlToMarkdown(HTMLParser):
         source = _attr(attrs, "src")
         alt = _attr(attrs, "alt")
         if source:
-            self._inline.append(f"![{_escape_md(alt)}]({_link_target(source)})")
-        elif alt:
+            target = _link_target(source, image=True)
+            if target:
+                self._inline.append(f"![{_escape_md(alt)}]({target})")
+                return
+        if alt:
+            # A refused source loses the picture, never its caption.
             self._inline.append(_escape_md(alt))
 
     # -- tables -----------------------------------------------------------
@@ -442,15 +482,31 @@ def _attr(attrs: list[tuple[str, str | None]], name: str) -> str:
     return ""
 
 
-def _link_target(href: str) -> str:
+def _link_target(href: str, *, image: bool = False) -> str:
+    """The destination to write into a link, or "" when it must not be one.
+
+    A destination the web renderer would refuse - `javascript:`, `vbscript:`,
+    `data:text/html` and every other scheme outside `_SAFE_LINK_SCHEMES` -
+    yields no link at all. The text the element wrapped is content and is kept
+    by the caller, which is this module's rule for anything it cannot
+    represent: a refused destination costs the link, never the words.
+    """
     href = (href or "").strip()
-    if not href:
+    if not href or not _destination_is_allowed(href, image=image):
         return ""
     # A destination with spaces or angle brackets must be wrapped or it ends
     # the Markdown link early.
     if any(character in href for character in " ()<>"):
         return f"<{href}>"
     return href
+
+
+def _destination_is_allowed(href: str, *, image: bool) -> bool:
+    """Whether a destination is scheme-free (relative) or carries a safe scheme."""
+    if image and _SAFE_IMAGE_DATA_RE.match(href):
+        return True
+    match = _SCHEME_RE.match(_URL_NOISE_RE.sub("", href))
+    return match is None or match.group(1).lower() in _SAFE_LINK_SCHEMES
 
 
 __all__ = ["HtmlConversionError", "html_to_markdown"]

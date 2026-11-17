@@ -563,6 +563,77 @@ def test_a_second_sync_while_the_first_is_running_dispatches_nothing(
     assert len(dispatched) == 1
 
 
+def test_a_failure_before_the_task_is_queued_gives_the_lock_back(
+    linked_kb: _LinkedFolderKB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source must not stay "already syncing" because bookkeeping failed.
+
+    The lock is handed to the background task, so its only release used to sit
+    in a `try` that started *after* the task id, the progress entry and the
+    queueing call: a failure in any of them left the OS byte lock held, and
+    every later sync of that source answered 409 until the process restarted.
+
+    The failed request's traceback is retained on purpose below. It keeps the
+    route's frame - and with it the lock handle nothing released - alive, which
+    is exactly what an error reporter does in production; without that
+    reference the frame is collected and the OS closes the handle for us.
+    """
+    from fastapi import BackgroundTasks, HTTPException
+
+    real_build = knowledge_router_module._build_unique_task_id
+
+    def _build(*_args, **_kwargs):
+        raise RuntimeError("could not build the task id")
+
+    monkeypatch.setattr(knowledge_router_module, "_build_unique_task_id", _build)
+
+    async def _attempt() -> None:
+        await knowledge_router_module.sync_folder("kb", linked_kb.folder["id"], BackgroundTasks())
+
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(_attempt())
+
+    monkeypatch.setattr(knowledge_router_module, "_build_unique_task_id", real_build)
+
+    # `failed` keeps the exception and its context, and with them the route's
+    # frame and the lock handle in it - so a lock nobody released is still held
+    # right here, exactly as it would be behind an error reporter.
+    with TestClient(_build_app()) as client:
+        retried = linked_kb.sync(client)
+
+    assert failed.value.status_code == 500
+    assert "could not build the task id" in str(failed.value.detail)
+    # Nothing was queued, so the source is not locked: the retry starts.
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["task_id"] is not None
+    # The failed attempt dispatched nothing; the retry dispatched the batch once.
+    assert len(linked_kb.dispatched) == 1
+
+
+def test_a_failed_prune_is_logged_with_the_folder_name_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning names the folder; a stray `f` used to render as `f'<id>'`."""
+    manager = _FolderManager(tmp_path)
+
+    def _broken(*_args, **_kwargs):
+        raise RuntimeError("sync state is unreadable")
+
+    manager.prune_folder_sync_state = _broken
+    with caplog.at_level("WARNING", logger=knowledge_router_module.__name__):
+        knowledge_router_module._record_reported_removals(
+            manager, "kb", "folder-1", [str(tmp_path / "gone.md")]
+        )
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "from folder 'folder-1' of KB 'kb'" in message
+    assert "f'folder-1'" not in message
+    assert "sync state is unreadable" in message
+
+
 def test_a_reported_removal_is_not_reported_again(linked_kb: _LinkedFolderKB) -> None:
     """A removal is reported once, then forgotten instead of nagging forever.
 

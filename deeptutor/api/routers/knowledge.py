@@ -5158,7 +5158,7 @@ def _record_reported_removals(
     except Exception as exc:
         logger.warning(
             f"Could not forget {len(removed_files)} reported removal(s) from folder "
-            f"f'{folder_id}' of KB '{kb_name}': {exc}"
+            f"'{folder_id}' of KB '{kb_name}': {exc}"
         )
 
 
@@ -5249,22 +5249,28 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
                     "Wait for it to finish before syncing this folder again."
                 ),
             )
-        task_id = _build_unique_task_id("kb_upload", f"{kb_name}_folder_{folder_id}")
-        get_task_stream_manager().ensure_task(task_id)
-
-        # NOTE: We DO NOT update sync state here anymore.
-        # It is updated in run_upload_processing_task only after successful processing.
-        # This prevents marking files as synced if processing fails (race condition fix).
-
-        _mark_kb_queued_for_processing(
-            manager,
-            kb_name,
-            task_id,
-            f"Syncing {len(files_to_process)} file(s) from linked folder...",
-        )
-
-        # Add background task to process files
+        # Everything a sync needs before the background task owns the lock sits
+        # in one guard. The lock is handed to that task, so releasing it from
+        # here is only correct once the task exists; any failure before that -
+        # a task id, the progress entry, the queueing bookkeeping, the indexing
+        # snapshot - has to give the lock back or the source answers 409 to
+        # every later sync for the life of the process.
         try:
+            task_id = _build_unique_task_id("kb_upload", f"{kb_name}_folder_{folder_id}")
+            get_task_stream_manager().ensure_task(task_id)
+
+            # NOTE: We DO NOT update sync state here anymore.
+            # It is updated in run_upload_processing_task only after successful processing.
+            # This prevents marking files as synced if processing fails (race condition fix).
+
+            _mark_kb_queued_for_processing(
+                manager,
+                kb_name,
+                task_id,
+                f"Syncing {len(files_to_process)} file(s) from linked folder...",
+            )
+
+            # Add background task to process files
             accepted_snapshot = _freeze_append_indexing(kb_name, kb_base_dir, kb_provider)
             background_tasks.add_task(
                 _run_folder_sync_task,

@@ -232,6 +232,150 @@ def test_html_without_readable_text_is_reported_as_empty(client: TestClient) -> 
     assert client.get("/api/documents").json()["documents"] == []
 
 
+def test_a_table_that_never_closes_still_reports_its_cells(client: TestClient) -> None:
+    """An unclosed <table> is malformed input, not an empty table.
+
+    ``_end_table`` runs only on `</table>`, and nothing flushed a table at the
+    end of the document, so the rows collected so far were dropped while the
+    file still reported `imported` - the one thing this module promises never
+    to do. The last cell holds no closing tag at all here.
+    """
+    result = _import_one(
+        client,
+        "unclosed-table.html",
+        b"<p>before</p><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr>",
+    )
+    assert result["outcome"] == "imported", result
+    assert result["reason"] is None
+
+    content = _page(client, result)["content"]
+    # Nothing vanished with the element: the paragraph and all three cells.
+    assert content == "before\n\n| a | b |\n| --- | --- |\n| c |  |"
+
+
+def test_a_table_after_an_unclosed_heading_keeps_its_rows(client: TestClient) -> None:
+    """The other shape of the same bug: a heading, then a table cut off midway."""
+    result = _import_one(
+        client,
+        "notes.html",
+        b"<h2>Notes</h2><table><tr><th>k</th></tr><tr><td>v</td>",
+    )
+    assert result["outcome"] == "imported", result
+    assert _page(client, result)["content"] == "## Notes\n\n| k |\n| --- |\n| v |"
+
+
+def test_a_file_truncated_mid_table_keeps_what_it_reached(client: TestClient) -> None:
+    """A download cut off inside a cell: the rows read so far are readable."""
+    result = _import_one(
+        client,
+        "cut-short.html",
+        (
+            "<html><body><h1>Report</h1><p>Intro.</p>"
+            "<table><tr><th>term</th><th>meaning</th></tr>"
+            "<tr><td>Fourier</td><td>freq"
+        ).encode(),
+    )
+    assert result["outcome"] == "imported", result
+    assert _page(client, result)["content"] == (
+        "# Report\n\nIntro.\n\n| term | meaning |\n| --- | --- |\n| Fourier | freq |"
+    )
+
+
+def test_a_nested_table_does_not_discard_the_table_it_sits_in(
+    client: TestClient,
+) -> None:
+    """A <table> starting inside an open table ends the outer one, keeping rows."""
+    result = _import_one(
+        client,
+        "nested.html",
+        b"<table><tr><td>outer<table><tr><td>inner</td></tr></table></td></tr></table>",
+    )
+    assert result["outcome"] == "imported", result
+
+    content = _page(client, result)["content"]
+    assert "outer" in content, content
+    assert "inner" in content, content
+
+
+def test_an_unsafe_link_scheme_loses_the_link_but_keeps_its_text(
+    client: TestClient,
+) -> None:
+    """javascript:, vbscript: and data:text/html never become a destination.
+
+    The renderer in web/lib/markdown-display.ts already refuses them; refusing
+    them here too means the Markdown a page is stored as never carries one in
+    the first place. The text the link wrapped is content and stays.
+    """
+    result = _import_one(
+        client,
+        "links.html",
+        (
+            b'<p><a href="javascript:alert(1)">click</a></p>'
+            b'<p><a href="vbscript:msgbox(1)">vb</a></p>'
+            b'<p><a href="data:text/html,&lt;b&gt;x&lt;/b&gt;">data</a></p>'
+        ),
+    )
+    assert result["outcome"] == "imported", result
+
+    content = _page(client, result)["content"]
+    assert content == "click\n\nvb\n\ndata"
+    assert "javascript:" not in content
+    assert "vbscript:" not in content
+
+
+def test_safe_link_destinations_are_kept_as_links(client: TestClient) -> None:
+    """Every destination the web renderer allows stays a real link."""
+    result = _import_one(
+        client,
+        "kept-links.html",
+        (
+            b'<p><a href="https://example.com/a">https link</a></p>'
+            b'<p><a href="http://example.com/b">http link</a></p>'
+            b'<p><a href="mailto:someone@example.com">mail</a></p>'
+            b'<p><a href="#section">anchor</a></p>'
+            b'<p><a href="attachment:report.pdf">file card</a></p>'
+            b'<p><a href="./notes/x.md">relative</a></p>'
+            b'<p><a href="ircs://irc.libera.chat/deeptutor">irc</a></p>'
+        ),
+    )
+    assert result["outcome"] == "imported", result
+
+    content = _page(client, result)["content"]
+    for line in (
+        "[https link](https://example.com/a)",
+        "[http link](http://example.com/b)",
+        "[mail](mailto:someone@example.com)",
+        "[anchor](#section)",
+        "[file card](attachment:report.pdf)",
+        "[relative](./notes/x.md)",
+        "[irc](ircs://irc.libera.chat/deeptutor)",
+    ):
+        assert line in content, content
+
+
+def test_an_image_source_follows_the_same_scheme_rule(client: TestClient) -> None:
+    """A blocked src keeps the alt text; a self-contained raster png still embeds."""
+    result = _import_one(
+        client,
+        "images.html",
+        (
+            b'<p><img src="javascript:alert(1)" alt="blocked"></p>'
+            b'<p><img src="https://example.com/p.png" alt="remote"></p>'
+            b'<p><img src="data:image/png;base64,iVBORw0KGgo=" alt="shot"></p>'
+            b'<p><img src="data:text/html,&lt;b&gt;x&lt;/b&gt;" alt="markup"></p>'
+        ),
+    )
+    assert result["outcome"] == "imported", result
+
+    content = _page(client, result)["content"]
+    assert content == (
+        "blocked\n\n"
+        "![remote](https://example.com/p.png)\n\n"
+        "![shot](data:image/png;base64,iVBORw0KGgo=)\n\n"
+        "markup"
+    )
+
+
 def test_htm_extension_case_and_gbk_decoding(client: TestClient) -> None:
     """An older Chinese export is GBK, and .htm/.HTML are the same format."""
     response = client.post(

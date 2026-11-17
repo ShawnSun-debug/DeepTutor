@@ -560,7 +560,9 @@ async def _import_collection(file: UploadFile, target: ImportTarget) -> ImportFi
             filename=filename, destination=target.destination, outcome="skipped", reason="empty"
         )
 
-    content = _normalise_newlines(FileTypeRouter.decode_bytes(data))
+    # Same order as the authored page: drop the decoded BOM first, or a record's
+    # body and its list summary would both start with an invisible character.
+    content = _normalise_newlines(_strip_leading_bom(FileTypeRouter.decode_bytes(data)))
     if not content.strip():
         return ImportFileResult(
             filename=filename, destination=target.destination, outcome="skipped", reason="empty"
@@ -678,6 +680,53 @@ def _kb_result(upload: UploadFile, outcome: Literal["failed"], reason: str) -> I
     )
 
 
+@dataclass(frozen=True)
+class _ResolvedKnowledgeBase:
+    """The knowledge base a batch is going into, resolved once for the batch."""
+
+    manager: Any
+    name: str
+    base_dir: Path
+    entry: dict[str, Any]
+
+
+def _resolve_knowledge_base(kb_name: str) -> _ResolvedKnowledgeBase:
+    """Resolve the named knowledge base, or raise why it cannot be used.
+
+    Split out from `_import_knowledge_base` because a name that does not resolve
+    has to be known *before* anything is written: `auto` routes notes and
+    collections first, and a 404 raised after those were written told the user
+    the whole request had failed while their pages already existed, so the
+    corrected retry created them twice.
+
+    The `HTTPException` carries the reason the request itself would give (404
+    for a name that resolves to nothing, 409 for a workspace or access
+    problem), so a per-file failure can repeat it verbatim.
+    """
+    # Resolve the pipeline's helpers at call time instead of copying them: a fix
+    # in the upload route must reach this one, and importing the knowledge
+    # router eagerly would drag the whole RAG stack into this router's import.
+    from deeptutor.api.routers import knowledge as kb_routes
+    from deeptutor.services.workspace.models import WorkspaceError
+
+    try:
+        manager, kb_name, kb_base_dir = kb_routes._writable_kb(kb_name)
+    except WorkspaceError as exc:
+        # A workspace problem is not a missing knowledge base; keep the reason.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError:
+        raise HTTPException(
+            status_code=404, detail=f"Knowledge base '{kb_name}' not found"
+        ) from None
+
+    # A name that resolves to no knowledge base is a request to the wrong place,
+    # not one file's problem: there is no knowledge base whose reason it is.
+    kb_entry = kb_routes._load_kb_entry_or_404(manager, kb_name)
+    return _ResolvedKnowledgeBase(
+        manager=manager, name=kb_name, base_dir=kb_base_dir, entry=kb_entry
+    )
+
+
 async def _import_knowledge_base(
     files: list[UploadFile],
     *,
@@ -720,21 +769,10 @@ async def _import_knowledge_base(
     # router eagerly would drag the whole RAG stack into this router's import.
     from deeptutor.api.routers import knowledge as kb_routes
     from deeptutor.services.workspace.knowledge import workspace_id_for_kb_base_dir
-    from deeptutor.services.workspace.models import WorkspaceError
 
-    try:
-        manager, kb_name, kb_base_dir = kb_routes._writable_kb(kb_name)
-    except WorkspaceError as exc:
-        # A workspace problem is not a missing knowledge base; keep the reason.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError:
-        raise HTTPException(
-            status_code=404, detail=f"Knowledge base '{kb_name}' not found"
-        ) from None
-
-    # A name that resolves to no knowledge base is a request to the wrong place,
-    # not one file's problem: there is no knowledge base whose reason it is.
-    kb_entry = kb_routes._load_kb_entry_or_404(manager, kb_name)
+    resolved = _resolve_knowledge_base(kb_name)
+    manager, kb_name, kb_base_dir = resolved.manager, resolved.name, resolved.base_dir
+    kb_entry = resolved.entry
 
     try:
         kb_routes._assert_kb_writable_or_409(kb_name, kb_entry)
@@ -1001,6 +1039,12 @@ async def _import_automatically(
     Duplicate content inside one request is skipped: the first copy is the one
     that is imported, and every later copy names it. Nothing is remembered
     between requests, so re-importing the same file still works.
+
+    The knowledge-base target is resolved before the first store is dispatched,
+    so a name that resolves to nothing fails only the files planned into it and
+    the rest of the batch still lands. Resolving it last is what produced a 404
+    for a request that had already written pages: the user retried the corrected
+    name and imported the same Markdown twice.
     """
     kb_extensions = _knowledge_base_extensions()
     kb_name = (target or "").strip()
@@ -1056,6 +1100,47 @@ async def _import_automatically(
         )
         planned[index] = None
 
+    # The knowledge base is the one destination whose name can be wrong while
+    # every other file in the batch is fine, and it used to be resolved last:
+    # notes and collections were written first, then a name that resolved to
+    # nothing raised a 404 that escaped this function, so the user was told the
+    # whole request had failed while their pages existed - and the corrected
+    # retry created them again.
+    #
+    # Resolving it here, before any store is dispatched, makes a wrong name cost
+    # nothing: the files planned into it fail one by one with the knowledge
+    # base's own reason and the rest of the batch proceeds, so nothing is ever
+    # written that the response does not report.
+    kb_indexes = [
+        index
+        for index, planned_destination in enumerate(planned)
+        if planned_destination == DESTINATION_KNOWLEDGE_BASE
+    ]
+    kb_rejection: str | None = None
+    if kb_indexes:
+        if not kb_name:
+            kb_rejection = _AUTO_NEEDS_KNOWLEDGE_BASE_REASON
+        else:
+            try:
+                _resolve_knowledge_base(kb_name)
+            except HTTPException as exc:
+                # The knowledge base refuses the whole batch for its own
+                # reason, and there is still a per-file answer to give.
+                kb_rejection = str(exc.detail)
+    if kb_rejection is not None:
+        for index in kb_indexes:
+            results[index] = ImportFileResult(
+                filename=(files[index].filename or "").strip(),
+                # A named knowledge base that does not resolve refused the file,
+                # so the result names the destination that refused it. A file
+                # with no knowledge base named went nowhere and claims no
+                # destination - which is what keeps it out of `groups`.
+                destination=DESTINATION_KNOWLEDGE_BASE if kb_name else "",
+                outcome="failed",
+                reason=kb_rejection,
+            )
+            planned[index] = None
+
     # Per-file destinations: one handler call per file, each reporting its own
     # landing. Iterating the registry keeps a future destination routable here as
     # soon as the table names it and the handler exists.
@@ -1075,32 +1160,27 @@ async def _import_automatically(
         for index in indexes:
             results[index] = await importer(files[index], import_target)
 
-    kb_indexes = [
-        index
-        for index, planned_destination in enumerate(planned)
-        if planned_destination == DESTINATION_KNOWLEDGE_BASE
-    ]
     task_id: str | None = None
-    if kb_indexes:
-        if kb_name:
-            # One call, one batch, one indexing job - the same contract an
-            # explicit knowledge-base import has.
+    if kb_indexes and kb_rejection is None:
+        # One call, one batch, one indexing job - the same contract an explicit
+        # knowledge-base import has. It resolves the target again, so its own
+        # failure is caught here rather than escaping: between the check above
+        # and this call the knowledge base can be deleted, made read-only, or
+        # have its workspace moved, and none of those is a request-level error
+        # once the rest of the batch has an answer to report.
+        try:
             outcome = await _import_knowledge_base(
                 [files[index] for index in kb_indexes],
                 target=target,
                 background_tasks=background_tasks,
             )
+        except HTTPException as exc:
+            for index in kb_indexes:
+                results[index] = _kb_result(files[index], "failed", str(exc.detail))
+        else:
             task_id = outcome.task_id
             for index, result in zip(kb_indexes, outcome.results, strict=True):
                 results[index] = result
-        else:
-            for index in kb_indexes:
-                results[index] = ImportFileResult(
-                    filename=(files[index].filename or "").strip(),
-                    destination=DESTINATION_KNOWLEDGE_BASE,
-                    outcome="failed",
-                    reason=_AUTO_NEEDS_KNOWLEDGE_BASE_REASON,
-                )
 
     missing = [index for index, result in enumerate(results) if result is None]
     if missing:  # pragma: no cover - defensive: every planned index is dispatched
