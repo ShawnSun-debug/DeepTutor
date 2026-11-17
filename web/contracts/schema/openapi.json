@@ -1101,6 +1101,43 @@
         "title": "Body_create_knowledge_base_api_knowledge_bases_post",
         "type": "object"
       },
+      "Body_import_documents_api_imports_documents_post": {
+        "properties": {
+          "destination": {
+            "default": "authored_page",
+            "title": "Destination",
+            "type": "string"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "contentMediaType": "application/octet-stream",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "title": "Body_import_documents_api_imports_documents_post",
+        "type": "object"
+      },
       "Body_import_docx_api_documents_import_docx_post": {
         "properties": {
           "file": {
@@ -4321,6 +4358,43 @@
         "title": "DoclingRemoteTest",
         "type": "object"
       },
+      "DocumentImportResponse": {
+        "description": "One outcome per file, plus the batch totals a UI shows.",
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ImportFileResult"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "destination",
+          "imported",
+          "skipped",
+          "failed",
+          "files"
+        ],
+        "title": "DocumentImportResponse",
+        "type": "object"
+      },
       "DocumentParsingInstall": {
         "description": "One-click pip install of an optional parser engine's package(s).",
         "properties": {
@@ -5738,6 +5812,57 @@
           "model_id"
         ],
         "title": "ImageDescriptionModelSelection",
+        "type": "object"
+      },
+      "ImportFileResult": {
+        "description": "What happened to one file. Every destination reports through this.",
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "imported",
+              "skipped",
+              "failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "filename",
+          "destination",
+          "outcome"
+        ],
+        "title": "ImportFileResult",
         "type": "object"
       },
       "ImportFromBookRequest": {
@@ -25952,6 +26077,81 @@
           }
         },
         "summary": "Import Chat History",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/imports/documents": {
+      "post": {
+        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination — is an HTTP error, because there is nothing\nper-file to report for it.",
+        "operationId": "import_documents_api_imports_documents_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "dt_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dt Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_documents_api_imports_documents_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentImportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Documents",
         "tags": [
           "imports"
         ]
