@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type MouseEvent } from 'react'
+import { useState, type MouseEvent } from 'react'
 import Link from 'next/link'
 import { useTranslation } from 'react-i18next'
 import {
@@ -64,7 +64,7 @@ export default function NoteTopBar({
   onMetadata,
   onInsertFavorite,
   onExport,
-  onImport,
+  onOpenImport,
 }: {
   page: NotePage | null
   pages: NoteSummary[]
@@ -83,8 +83,8 @@ export default function NoteTopBar({
   onMetadata: (patch: Partial<NotePage>) => void
   onInsertFavorite: () => void
   onExport: (format: 'md' | 'docx' | 'anki') => void
-  /** Receives the files the user picked; the drop surface decides where each one goes. */
-  onImport: (files: File[]) => void
+  /** Opens the import panel, which owns the file picker and the destination. */
+  onOpenImport: () => void
 }) {
   const { t } = useTranslation()
   const feature = useShelfFeature('/co-writer')
@@ -100,7 +100,6 @@ export default function NoteTopBar({
     }
   }
   const menu = useMenuPopover<HTMLDivElement>(open, setOpen)
-  const importInput = useRef<HTMLInputElement>(null)
   const byId = new Map(pages.map(p => [p.id, p]))
   const ancestors: NoteSummary[] = []
   for (
@@ -300,7 +299,7 @@ export default function NoteTopBar({
                   disabled={busy}
                   onClick={() => {
                     setOpen(false)
-                    importInput.current?.click()
+                    onOpenImport()
                   }}
                 >
                   <FileUp size={14} />
@@ -349,20 +348,6 @@ export default function NoteTopBar({
           </div>
         )}
       </div>
-      <input
-        ref={importInput}
-        type="file"
-        accept=".md,.markdown,.mdown,.txt,.html,.htm"
-        multiple
-        className="hidden"
-        aria-hidden
-        tabIndex={-1}
-        onChange={event => {
-          const files = Array.from(event.target.files ?? [])
-          event.target.value = ''
-          if (files.length) onImport(files)
-        }}
-      />
     </header>
   )
 }

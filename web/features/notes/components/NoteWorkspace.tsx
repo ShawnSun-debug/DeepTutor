@@ -22,6 +22,7 @@ import {
   type NoteSummary,
   type NoteSuggestion,
 } from '@/lib/notes-api'
+import { listNotebooks } from '@/lib/notebook-api'
 import { exportCoWriterDocx } from '@/lib/co-writer-api'
 import { notifyCoWriterChanged } from '@/lib/co-writer-events'
 import { browserStorage } from '@/shared/storage'
@@ -39,6 +40,7 @@ import { blockLineCenter } from './NoteThreadMarkers'
 import { foldIntoOrb } from '../model/fold-motion'
 import { useNoteThreads } from './useNoteThreads'
 import { pageDescendants } from '../model/page-tree'
+import { importRequestFor } from '../model/import-destinations'
 import { inlineText } from '../model/threads'
 import { learningKind } from '../model/learning-kinds'
 const Editor = dynamic(() => import('./NoteEditor'), {
@@ -73,6 +75,14 @@ export default function NoteWorkspace({
   const [importDestination, setImportDestination] = useState<ImportDestination>('auto')
   const [importTarget, setImportTarget] = useState('')
   const [importResult, setImportResult] = useState<NoteImportResult | null>(null)
+  // The import panel is a dialog the toolbar opens; it holds no page chrome, so
+  // an untouched page keeps its own top edge.
+  const [importOpen, setImportOpen] = useState(false)
+  // Collections are notebooks behind the shared import endpoint, addressed by an
+  // id the page cannot guess, so the panel lists the real ones instead of
+  // asking the user to type one.
+  const [importCollections, setImportCollections] = useState<{ id: string; name: string }[]>([])
+  const [importCollectionId, setImportCollectionId] = useState('')
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<NoteSaveStatus>('Saved')
   const [tree, setTreeOpen] = useState(false)
@@ -118,6 +128,26 @@ export default function NoteWorkspace({
       .then(r => setPages(r.documents))
       .catch(e => setError(String(e)))
   }, [])
+  // The collection destination needs the real ids, and the list is small enough
+  // to fetch when the panel opens rather than cache across the page.
+  useEffect(() => {
+    if (!importOpen) return
+    let cancelled = false
+    void listNotebooks()
+      .then(list => {
+        if (cancelled) return
+        setImportCollections(
+          list.filter(item => !item.unreadable).map(item => ({ id: item.id, name: item.name }))
+        )
+      })
+      .catch(() => {
+        if (cancelled) return
+        setImportCollections([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [importOpen])
   const persistDraft = useCallback(() => {
     if (draftKey && latest.current)
       browserStorage.writeRaw(
@@ -526,12 +556,13 @@ export default function NoteWorkspace({
     setImportResult(null)
     try {
       await flush()
-      const target = importTarget.trim()
-      const result = await importFiles(files, {
-        destination: importDestination,
-        collectionIds: importDestination === 'collection' && target ? [target] : [],
-        target: importDestination === 'knowledge_base' && target ? target : null,
-      })
+      const result = await importFiles(
+        files,
+        importRequestFor(importDestination, {
+          target: importTarget,
+          collectionId: importCollectionId,
+        })
+      )
       refreshPages()
       notifyCoWriterChanged()
       setImportResult(result)
@@ -625,13 +656,19 @@ export default function NoteWorkspace({
         onMetadata={patch => void metadata(patch)}
         onInsertFavorite={() => setFavorites(true)}
         onExport={format => void exportFile(format)}
-        onImport={files => void importFilesInto(files)}
+        onOpenImport={() => setImportOpen(true)}
       />
       <ImportDropSurface
+        open={importOpen}
+        onOpen={() => setImportOpen(true)}
+        onClose={() => setImportOpen(false)}
         destination={importDestination}
         onDestination={setImportDestination}
         target={importTarget}
         onTarget={setImportTarget}
+        collections={importCollections}
+        collectionId={importCollectionId}
+        onCollection={setImportCollectionId}
         onFiles={files => void importFilesInto(files)}
         busy={mutating}
       />

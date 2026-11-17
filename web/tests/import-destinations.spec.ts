@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
+import en from '../locales/en/app.json'
+import zh from '../locales/zh/app.json'
 import {
   IMPORT_DESTINATIONS,
   IMPORT_DESTINATION_LABEL,
   groupImportResult,
+  importRequestFor,
   ungroupedFiles,
 } from '@/features/notes/model/import-destinations'
 import type { NoteImportFileResult, NoteImportResult } from '@/lib/notes-api'
+
+const EN = en as Record<string, string>
+const ZH = zh as Record<string, string>
 
 function file(
   overrides: Partial<NoteImportFileResult> & { filename: string }
@@ -164,9 +170,62 @@ describe('import destinations', () => {
     ])
     expect(IMPORT_DESTINATION_LABEL).toEqual({
       auto: 'Auto',
-      authored_page: 'Notes',
+      authored_page: 'Note',
       collection: 'Collections',
       knowledge_base: 'Knowledge base',
     })
+  })
+})
+
+describe('importRequestFor', () => {
+  it('names the knowledge base for automatic routing, which asks for one', () => {
+    expect(importRequestFor('auto', { target: '  papers  ', collectionId: '' })).toEqual({
+      destination: 'auto',
+      collectionIds: [],
+      target: 'papers',
+    })
+  })
+
+  it('names the knowledge base for the knowledge base destination', () => {
+    expect(importRequestFor('knowledge_base', { target: 'papers', collectionId: '' }).target).toBe(
+      'papers'
+    )
+  })
+
+  it('sends the picked collection id and never the text beside it', () => {
+    expect(importRequestFor('collection', { target: 'typed noise', collectionId: 'ab12cd34' })).toEqual(
+      {
+        destination: 'collection',
+        collectionIds: ['ab12cd34'],
+        target: null,
+      }
+    )
+  })
+
+  it('says nothing it was not told', () => {
+    expect(importRequestFor('collection', { target: '', collectionId: '' }).collectionIds).toEqual([])
+    expect(importRequestFor('authored_page', { target: 'papers', collectionId: 'ab12cd34' })).toEqual({
+      destination: 'authored_page',
+      collectionIds: [],
+      target: null,
+    })
+    expect(importRequestFor('auto', { target: '   ', collectionId: '' }).target).toBeNull()
+  })
+})
+
+describe('destination labels in the catalogs', () => {
+  it('names each store with the word the English catalog shows', () => {
+    expect(EN[IMPORT_DESTINATION_LABEL.auto]).toMatch(/auto/i)
+    expect(EN[IMPORT_DESTINATION_LABEL.authored_page]).toMatch(/note/i)
+    expect(EN[IMPORT_DESTINATION_LABEL.collection]).toMatch(/collection/i)
+    expect(EN[IMPORT_DESTINATION_LABEL.knowledge_base]).toMatch(/knowledge/i)
+  })
+
+  it('shows a Chinese reader the word for a notebook, not for an explanation', () => {
+    expect(ZH[IMPORT_DESTINATION_LABEL.auto]).toBe('自动')
+    expect(ZH[IMPORT_DESTINATION_LABEL.authored_page]).toContain('笔记')
+    expect(ZH[IMPORT_DESTINATION_LABEL.authored_page]).not.toBe('说明')
+    expect(ZH[IMPORT_DESTINATION_LABEL.collection]).toContain('资料')
+    expect(ZH[IMPORT_DESTINATION_LABEL.knowledge_base]).toContain('知识库')
   })
 })

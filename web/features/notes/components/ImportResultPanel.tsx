@@ -35,7 +35,10 @@ export default function ImportResultPanel({
               {group.imported}/{group.files.length}
             </span>
             {group.files
-              .filter(file => file.outcome !== 'imported')
+              // An imported file can still carry a reason ("Not added to the
+              // collection"), and dropping it would report a partial landing as
+              // a clean success.
+              .filter(file => file.outcome !== 'imported' || Boolean(file.reason))
               .map(file => (
                 <p key={`${group.destination}:${file.filename}`} className="text-xs opacity-70">
                   {file.filename}

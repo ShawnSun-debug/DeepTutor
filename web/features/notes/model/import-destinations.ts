@@ -11,14 +11,49 @@ export const IMPORT_DESTINATIONS: readonly ImportDestination[] = [
 /**
  * Locale keys for the destination labels.
  *
- * These are words the app already ships, reused on purpose: a destination is not
- * a new concept to translate, it is the store's own name.
+ * Each key is an existing word the app already ships, picked by reading both
+ * catalogs instead of by guessing from the English key. `Notes` translates to
+ * "说明" in Chinese, so it names an explanation rather than the notebook;
+ * `Notebook` is already taken for the favorites store ("收藏夹"); and
+ * `Notebook pages` is "Pages" in English and "笔记页面" in Chinese, which do not
+ * agree. `Note` is "Note" / "笔记" everywhere, so both catalogs name where the
+ * files actually land.
  */
 export const IMPORT_DESTINATION_LABEL: Record<ImportDestination, string> = {
   auto: 'Auto',
-  authored_page: 'Notes',
+  authored_page: 'Note',
   collection: 'Collections',
   knowledge_base: 'Knowledge base',
+}
+
+/** What the import endpoint needs for one batch, given the picked destination. */
+export interface ImportRequest {
+  destination: ImportDestination
+  collectionIds: string[]
+  target: string | null
+}
+
+/**
+ * Build the request for one import batch.
+ *
+ * The two stores that cannot be inferred need different data: a knowledge base
+ * is addressed by its name, a collection by its id. Automatic routing is in the
+ * same position as the knowledge-base destination — it only sends a file to a
+ * knowledge base when `target` names one, and its own per-file reason asks for
+ * that field — so it carries the name too. A collection id is never guessed from
+ * free text: unselected sends no ids, and the server reports each file as failed
+ * instead of the page inventing an id.
+ */
+export function importRequestFor(
+  destination: ImportDestination,
+  { target, collectionId }: { target: string; collectionId: string }
+): ImportRequest {
+  const name = target.trim()
+  return {
+    destination,
+    collectionIds: destination === 'collection' && collectionId ? [collectionId] : [],
+    target: (destination === 'auto' || destination === 'knowledge_base') && name ? name : null,
+  }
 }
 
 /** One destination's share of a drop, ready to render as a section. */
