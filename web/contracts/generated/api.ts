@@ -2197,6 +2197,31 @@ export interface paths {
     readonly patch?: never;
     readonly trace?: never;
   };
+  readonly "/api/imports/documents": {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: never;
+      readonly path?: never;
+      readonly cookie?: never;
+    };
+    readonly get?: never;
+    readonly put?: never;
+    /**
+     * Import Documents
+     * @description Import a batch of files and report one outcome per file.
+     *
+     *     A bad file never fails the batch: it gets its own skipped or failed entry
+     *     and the rest still import. Only a malformed request — no files, too many
+     *     files, an unknown destination — is an HTTP error, because there is nothing
+     *     per-file to report for it.
+     */
+    readonly post: operations["import_documents_api_imports_documents_post"];
+    readonly delete?: never;
+    readonly options?: never;
+    readonly head?: never;
+    readonly patch?: never;
+    readonly trace?: never;
+  };
   readonly "/api/knowledge-bases": {
     readonly parameters: {
       readonly query?: never;
@@ -3140,9 +3165,17 @@ export interface paths {
      * Connect Obsidian Vault
      * @description Connect an existing Obsidian vault as a knowledge base.
      *
-     *     Registers a pointer to the user's vault directory (``type: obsidian``) — no
-     *     upload, no index. The vault must be a directory the server can reach (i.e. a
-     *     local/self-hosted deployment); the Obsidian capability reads it live.
+     *     Two modes, both independent so they may be registered for one vault at once:
+     *
+     *     * ``live`` (default) registers a pointer to the user's vault directory
+     *       (``type: obsidian``) — no upload, no index. The Obsidian capability reads it
+     *       live, and the ``rag`` tool cannot retrieve from it.
+     *     * ``indexed`` creates a real retrievable knowledge base on the default
+     *       LlamaIndex pipeline, registers the vault directory as a linked folder
+     *       source, and queues the first sync.
+     *
+     *     The vault must be an existing directory the server can reach (i.e. a
+     *     local/self-hosted deployment); that is checked before anything is registered.
      */
     readonly post: operations["connect_obsidian_vault_api_knowledge_bases_connect_obsidian_post"];
     readonly delete?: never;
@@ -12505,6 +12538,18 @@ export interface components {
       /** Storage Workspace Id */
       readonly storage_workspace_id?: string | null;
     };
+    /** Body_import_documents_api_imports_documents_post */
+    readonly Body_import_documents_api_imports_documents_post: {
+      /**
+       * Destination
+       * @default authored_page
+       */
+      readonly destination: string;
+      /** Files */
+      readonly files?: readonly string[] | null;
+      /** Parent Id */
+      readonly parent_id?: string | null;
+    };
     /** Body_import_docx_api_documents_import_docx_post */
     readonly Body_import_docx_api_documents_import_docx_post: {
       /** File */
@@ -13429,6 +13474,11 @@ export interface components {
     };
     /** ConnectObsidianRequest */
     readonly ConnectObsidianRequest: {
+      /**
+       * Mode
+       * @default live
+       */
+      readonly mode: string;
       /** Name */
       readonly name: string;
       /** Vault Path */
@@ -13951,6 +14001,22 @@ export interface components {
       readonly api_base_url: string;
       /** Api Token */
       readonly api_token?: string | null;
+    };
+    /**
+     * DocumentImportResponse
+     * @description One outcome per file, plus the batch totals a UI shows.
+     */
+    readonly DocumentImportResponse: {
+      /** Destination */
+      readonly destination: string;
+      /** Failed */
+      readonly failed: number;
+      /** Files */
+      readonly files: readonly components["schemas"]["ImportFileResult"][];
+      /** Imported */
+      readonly imported: number;
+      /** Skipped */
+      readonly skipped: number;
     };
     /**
      * DocumentParsingInstall
@@ -14567,6 +14633,25 @@ export interface components {
       readonly title: string;
       /** Updated At */
       readonly updated_at: number;
+    };
+    /**
+     * ImportFileResult
+     * @description What happened to one file. Every destination reports through this.
+     */
+    readonly ImportFileResult: {
+      /** Destination */
+      readonly destination: string;
+      /** Document Id */
+      readonly document_id?: string | null;
+      /** Filename */
+      readonly filename: string;
+      /**
+       * Outcome
+       * @enum {string}
+       */
+      readonly outcome: "imported" | "skipped" | "failed";
+      /** Reason */
+      readonly reason?: string | null;
     };
     /** ImportFromBookRequest */
     readonly ImportFromBookRequest: {
@@ -19110,6 +19195,8 @@ export type SchemaBodyAdminImportUsersApiAuthUsersImportPost =
   components["schemas"]["Body_admin_import_users_api_auth_users_import_post"];
 export type SchemaBodyCreateKnowledgeBaseApiKnowledgeBasesPost =
   components["schemas"]["Body_create_knowledge_base_api_knowledge_bases_post"];
+export type SchemaBodyImportDocumentsApiImportsDocumentsPost =
+  components["schemas"]["Body_import_documents_api_imports_documents_post"];
 export type SchemaBodyImportDocxApiDocumentsImportDocxPost =
   components["schemas"]["Body_import_docx_api_documents_import_docx_post"];
 export type SchemaBodyImportPreviewApiQuestionNotebookPracticeImportPreviewPost =
@@ -19273,6 +19360,8 @@ export type SchemaDeviceLoginRequest =
 export type SchemaDisplaySettings = components["schemas"]["DisplaySettings"];
 export type SchemaDoclingRemoteTest =
   components["schemas"]["DoclingRemoteTest"];
+export type SchemaDocumentImportResponse =
+  components["schemas"]["DocumentImportResponse"];
 export type SchemaDocumentParsingInstall =
   components["schemas"]["DocumentParsingInstall"];
 export type SchemaDocumentParsingTest =
@@ -19342,6 +19431,7 @@ export type SchemaImaKnowledgeBaseSummary =
   components["schemas"]["ImaKnowledgeBaseSummary"];
 export type SchemaImportedMessage = components["schemas"]["ImportedMessage"];
 export type SchemaImportedSession = components["schemas"]["ImportedSession"];
+export type SchemaImportFileResult = components["schemas"]["ImportFileResult"];
 export type SchemaImportFromBookRequest =
   components["schemas"]["ImportFromBookRequest"];
 export type SchemaIndexingLlmSelectionRequest =
@@ -24666,6 +24756,43 @@ export interface operations {
           readonly "application/json": {
             readonly [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      readonly 422: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  readonly import_documents_api_imports_documents_post: {
+    readonly parameters: {
+      readonly query?: never;
+      readonly header?: {
+        readonly Authorization?: string | null;
+      };
+      readonly path?: never;
+      readonly cookie?: {
+        readonly dt_token?: string | null;
+      };
+    };
+    readonly requestBody?: {
+      readonly content: {
+        readonly "multipart/form-data": components["schemas"]["Body_import_documents_api_imports_documents_post"];
+      };
+    };
+    readonly responses: {
+      /** @description Successful Response */
+      readonly 200: {
+        headers: {
+          readonly [name: string]: unknown;
+        };
+        content: {
+          readonly "application/json": components["schemas"]["DocumentImportResponse"];
         };
       };
       /** @description Validation Error */

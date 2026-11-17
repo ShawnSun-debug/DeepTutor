@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type MouseEvent } from 'react'
+import { useRef, useState, type MouseEvent } from 'react'
 import Link from 'next/link'
 import { useTranslation } from 'react-i18next'
 import {
@@ -11,6 +11,7 @@ import {
   CornerUpRight,
   FileDown,
   FileText,
+  FileUp,
   MoreHorizontal,
   PanelLeft,
   Pin,
@@ -63,6 +64,7 @@ export default function NoteTopBar({
   onMetadata,
   onInsertFavorite,
   onExport,
+  onImport,
 }: {
   page: NotePage | null
   pages: NoteSummary[]
@@ -81,6 +83,8 @@ export default function NoteTopBar({
   onMetadata: (patch: Partial<NotePage>) => void
   onInsertFavorite: () => void
   onExport: (format: 'md' | 'docx' | 'anki') => void
+  /** Receives the Markdown files the user picked; one page per file. */
+  onImport: (files: File[]) => void
 }) {
   const { t } = useTranslation()
   const feature = useShelfFeature('/co-writer')
@@ -96,6 +100,7 @@ export default function NoteTopBar({
     }
   }
   const menu = useMenuPopover<HTMLDivElement>(open, setOpen)
+  const importInput = useRef<HTMLInputElement>(null)
   const byId = new Map(pages.map(p => [p.id, p]))
   const ancestors: NoteSummary[] = []
   for (
@@ -292,6 +297,18 @@ export default function NoteTopBar({
                 <button
                   role="menuitem"
                   className="dt-menu-item"
+                  disabled={busy}
+                  onClick={() => {
+                    setOpen(false)
+                    importInput.current?.click()
+                  }}
+                >
+                  <FileUp size={14} />
+                  {t('Import Markdown')}
+                </button>
+                <button
+                  role="menuitem"
+                  className="dt-menu-item"
                   onClick={() => {
                     setOpen(false)
                     onExport('md')
@@ -332,6 +349,20 @@ export default function NoteTopBar({
           </div>
         )}
       </div>
+      <input
+        ref={importInput}
+        type="file"
+        accept=".md,.markdown"
+        multiple
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+        onChange={event => {
+          const files = Array.from(event.target.files ?? [])
+          event.target.value = ''
+          if (files.length) onImport(files)
+        }}
+      />
     </header>
   )
 }

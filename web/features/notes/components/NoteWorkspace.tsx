@@ -14,6 +14,7 @@ import {
   reviewSuggestion,
   noteRequest,
   exportNoteFlashcards,
+  importMarkdownNotes,
   type NoteBlock,
   type NotePage,
   type NoteSummary,
@@ -61,6 +62,8 @@ export default function NoteWorkspace({
   const [page, setPage] = useState<NotePage | null>(null)
   const [pages, setPages] = useState<NoteSummary[]>([])
   const [error, setError] = useState('')
+  // One line describing what a batch import did; empty when it fully landed.
+  const [importNotice, setImportNotice] = useState('')
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<NoteSaveStatus>('Saved')
   const [tree, setTreeOpen] = useState(false)
@@ -503,6 +506,32 @@ export default function NoteWorkspace({
       setError(String(err))
     }
   }
+  // Markdown files land as ordinary pages at the top level. The response is
+  // per file, so a single bad file is reported instead of failing the batch.
+  const importMarkdown = async (files: File[]) => {
+    setMutating(true)
+    setImportNotice('')
+    try {
+      await flush()
+      const result = await importMarkdownNotes(files)
+      refreshPages()
+      notifyCoWriterChanged()
+      const missed = result.files.filter(item => item.outcome !== 'imported')
+      setImportNotice(
+        missed.length
+          ? `${t('Imported')} ${result.imported} / ${result.files.length}. ` +
+            missed
+              .slice(0, 3)
+              .map(item => `${item.filename}: ${item.reason ?? item.outcome}`)
+              .join(' · ')
+          : ''
+      )
+    } catch (err) {
+      setImportNotice(String(err))
+    } finally {
+      setMutating(false)
+    }
+  }
   const invalidParents = pageDescendants(pages, docId)
   const createPage = async (parentId: string | null = null) => {
     setMutating(true)
@@ -587,7 +616,16 @@ export default function NoteWorkspace({
         onMetadata={patch => void metadata(patch)}
         onInsertFavorite={() => setFavorites(true)}
         onExport={format => void exportFile(format)}
+        onImport={files => void importMarkdown(files)}
       />
+      {importNotice && (
+        <div className="dt-note-banner" role="status">
+          <span className="flex-1">{importNotice}</span>
+          <button className="dt-note-button" onClick={() => setImportNotice('')}>
+            {t('Dismiss')}
+          </button>
+        </div>
+      )}
       {error && (
         <div role="alert" className="dt-note-banner is-error">
           <span className="flex-1">{error}</span>

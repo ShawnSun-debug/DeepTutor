@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c3b938e1a6af4378a012f1f6faa1887d8c8d2b37042f8f01885deabebeef625a",
+  "fingerprint": "6c5ee3935f48749b83c6ef7f1d9e3fbcda3d2c12f70a7cd06f8184a2cb14f9c9",
   "routers": {
     "deeptutor.api.routers.auth:router": [
       {
@@ -1147,6 +1147,14 @@
         "kind": "http",
         "methods": [
           "GET"
+        ]
+      },
+      {
+        "path": "/documents",
+        "name": "import_documents",
+        "kind": "http",
+        "methods": [
+          "POST"
         ]
       }
     ],
