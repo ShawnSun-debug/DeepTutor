@@ -24,6 +24,7 @@ What these tests pin down:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,39 @@ def import_files(*args: str):
 # ---------------------------------------------------------------------------
 # 1. Each destination imports through the one command
 # ---------------------------------------------------------------------------
+
+
+def test_a_run_does_not_print_httpx_request_logs(storage: CoWriterStorage, tmp_path: Path) -> None:
+    """A one-shot command's output is the per-file report, nothing else.
+
+    httpx logs every request at INFO; with the CLI configuring logging, that
+    line landed on stderr between the report lines. The command quiets it for
+    the duration of the request and restores the level afterwards, so a library
+    caller is unaffected.
+    """
+    httpx_logger = logging.getLogger("httpx")
+    before = httpx_logger.level
+    records: list[logging.LogRecord] = []
+
+    class Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = Collect()
+    httpx_logger.addHandler(handler)
+    httpx_logger.setLevel(logging.INFO)
+    try:
+        source = write(tmp_path, "quiet.md", "# Quiet\n")
+        result = import_files(str(source), "--to", "notes")
+    finally:
+        httpx_logger.removeHandler(handler)
+        httpx_logger.setLevel(before)
+
+    assert result.exit_code == 0, result.output
+    assert not [record for record in records if record.name == "httpx"], (
+        "the command must not let httpx log its request"
+    )
+    assert httpx_logger.level == before, "the quiet window must restore the level"
 
 
 def test_to_notes_imports_a_markdown_file_as_a_page(

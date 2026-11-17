@@ -19,7 +19,9 @@ Two consequences are worth keeping in mind:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
+import logging
 from pathlib import Path
 
 import typer
@@ -123,6 +125,25 @@ def register(app: typer.Typer) -> None:
         raise typer.Exit(code=_exit_code(payload))
 
 
+@contextmanager
+def _quiet_httpx():
+    """Keep httpx's per-request INFO line out of a one-shot command's output.
+
+    httpx logs every request at INFO. For a command whose whole output is
+    the per-file report, that line is noise on stderr -- and it is the one
+    thing a user piping the report does not want. The level is restored
+    afterwards so calling this from a library does not change global state.
+    """
+
+    logger = logging.getLogger("httpx")
+    previous = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        logger.setLevel(previous)
+
+
 async def _post(
     sources: list[Path],
     *,
@@ -169,7 +190,8 @@ async def _post(
 
     transport = httpx.ASGITransport(app=application)
     async with httpx.AsyncClient(transport=transport, base_url="http://deeptutor.local") as client:
-        response = await client.post(_ENDPOINT, data=form, files=uploads)
+        with _quiet_httpx():
+            response = await client.post(_ENDPOINT, data=form, files=uploads)
 
     try:
         payload = response.json()
