@@ -189,7 +189,9 @@ def test_one_bad_file_never_fails_the_batch(client: TestClient) -> None:
     assert outcomes["good.md"]["outcome"] == "imported"
     assert outcomes["second.md"]["outcome"] == "imported"
     assert outcomes["notes.txt"]["outcome"] == "skipped"
-    assert outcomes["notes.txt"]["reason"] == "unsupported extension (supported: .md, .markdown)"
+    assert outcomes["notes.txt"]["reason"] == (
+        "unsupported extension (supported: .md, .markdown, .html, .htm)"
+    )
     assert outcomes["empty.md"]["outcome"] == "skipped"
     assert outcomes["empty.md"]["reason"] == "empty"
     assert outcomes["blank.md"]["outcome"] == "skipped"
