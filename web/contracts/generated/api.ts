@@ -2741,8 +2741,13 @@ export interface paths {
      * Sync Folder
      * @description Sync files from a linked folder to the knowledge base.
      *
-     *     This scans the linked folder for supported documents and processes
-     *     any new files that haven't been added yet.
+     *     Indexes the files added or modified since the last sync and leaves the
+     *     others alone. Files the folder no longer provides are reported in the
+     *     response and stay in the knowledge base: deleting an imported document
+     *     remains an explicit action. A source that has gone missing, or that lost
+     *     every supported file it used to provide, is refused instead of reported as
+     *     a successful sync, and a second sync of a source that is already running is
+     *     refused rather than started twice.
      */
     readonly post: operations["sync_folder_api_knowledge_bases__kb_name__sync_folder__folder_id__post"];
     readonly delete?: never;
@@ -17591,6 +17596,9 @@ export interface components {
     /**
      * SyncFolderResponse
      * @description Response model for a linked-folder sync request.
+     *
+     *     Quirky but kept: new_files/modified_files/removed_files are counts while
+     *     files/removed are the matching paths.
      */
     readonly SyncFolderResponse: {
       /** File Count */
@@ -17605,6 +17613,13 @@ export interface components {
       readonly modified_files: number;
       /** New Files */
       readonly new_files: number;
+      /** Removed */
+      readonly removed?: readonly string[];
+      /**
+       * Removed Files
+       * @default 0
+       */
+      readonly removed_files: number;
       /** Task Id */
       readonly task_id: string | null;
     };
