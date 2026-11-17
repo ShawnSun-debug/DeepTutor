@@ -151,6 +151,41 @@ it("shows queued sync counts for new and modified files", async () => {
   ).toBeInTheDocument();
 });
 
+it("states removed files alongside the queued counts", async () => {
+  fixture.list.mockResolvedValue([folder]);
+  const onSyncFolder = vi.fn().mockResolvedValue({
+    message:
+      "Syncing 2 files from linked folder. 1 source file is no longer in the folder; its imported copy stays in the knowledge base.",
+    folder_path: "/notes",
+    files: ["/notes/a.md", "/notes/b.md"],
+    new_files: 1,
+    modified_files: 1,
+    file_count: 2,
+    task_id: "sync-task",
+    removed: ["/notes/gone.md"],
+    removed_files: 1,
+  });
+
+  render(
+    <KbLinkedFoldersSection
+      kb={kb}
+      onLinkFolder={vi.fn()}
+      onUnlinkFolder={vi.fn()}
+      onSyncFolder={onSyncFolder}
+    />,
+  );
+
+  await waitFor(() => expect(screen.getByText("/notes")).toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+
+  expect(
+    await screen.findByText("Queued 2 files for indexing. 1 new, 1 modified."),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText(/1 source file is no longer in the folder/),
+  ).toBeInTheDocument();
+});
+
 it("shows a retry action when the linked-folder list fails to load", async () => {
   fixture.list
     .mockRejectedValueOnce(new Error("Folder service unavailable"))
