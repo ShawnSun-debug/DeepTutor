@@ -47,6 +47,12 @@ from deeptutor.knowledge.add_documents import (
     hashes_for_indexed_files,
     remove_raw_document,
 )
+from deeptutor.knowledge.embedding_setup import (
+    EMBEDDING_BINDING_UNAVAILABLE,
+    LOCAL_EMBEDDING_OPTION,
+    describe_embedding_target,
+    explain_embedding_problem,
+)
 from deeptutor.knowledge.folder_sync_lock import FolderSyncLock
 from deeptutor.knowledge.initializer import KnowledgeBaseInitializer
 from deeptutor.knowledge.kb_types import is_connected_kb, supports_local_raw_files
@@ -899,6 +905,7 @@ def _resolve_embedding_form(value, provider: str, entry: dict | None = None):
                 detail="This knowledge engine does not use a local embedding model.",
             )
         return None, None
+    selection = None
     try:
         selection = (
             json.loads(value)
@@ -914,7 +921,54 @@ def _resolve_embedding_form(value, provider: str, entry: dict | None = None):
         selection = {k: selection[k] for k in ("profile_id", "model_id")}
         return selection, get_embedding_config(selection)
     except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # An embedding refusal has to say whether this profile reaches a remote
+        # service and how to run fully local without a key. See
+        # deeptutor.knowledge.embedding_setup.
+        raise HTTPException(
+            status_code=400,
+            detail=explain_embedding_problem(
+                str(exc), selection=selection if isinstance(selection, dict) else None
+            ),
+        ) from exc
+
+
+def _embedding_setup_payload(rag_provider: str, embedding_selection: dict | None) -> dict:
+    """What this knowledge base will embed with, or why it cannot yet.
+
+    Reported when the knowledge base is created, so "a localhost server needs
+    no key" is discoverable before the first failed index instead of after it.
+    """
+    from deeptutor.services.rag.embedding_binding import EMBEDDING_PROVIDERS
+
+    if rag_provider not in EMBEDDING_PROVIDERS:
+        return {
+            "required": False,
+            "configured": None,
+            "model": None,
+            "provider": None,
+            "provider_mode": None,
+            "endpoint": None,
+            "is_local": None,
+            "requires_network": None,
+            "needs_api_key": False,
+            "error": None,
+            "message": (
+                f"The {rag_provider} engine does not use embedding vectors, so no embedding "
+                "model is needed."
+            ),
+            "guidance": "",
+        }
+    payload = describe_embedding_target(selection=embedding_selection).as_dict()
+    payload["required"] = True
+    payload["guidance"] = LOCAL_EMBEDDING_OPTION
+    return payload
+
+
+def _created_message(base: str, embedding_setup: dict) -> str:
+    """Append the honest embedding verdict when the new KB cannot index yet."""
+    if not embedding_setup.get("required") or embedding_setup.get("configured"):
+        return base
+    return f"{base} {embedding_setup['message']} {embedding_setup['guidance']}"
 
 
 def _enforce_provider_formats(provider: str, files: list[UploadFile]) -> None:
@@ -3697,10 +3751,10 @@ async def upload_files(
 
         binding_state, bound_config = binding_status(kb_entry)
         if binding_state in {"missing", "changed", "unconfigured"}:
-            raise HTTPException(
-                status_code=409,
-                detail="The bound embedding model is unavailable or changed. Check the model settings or select a model to re-index this knowledge base.",
-            )
+            # One sentence, shared verbatim with the import endpoint's per-file
+            # reason: a paraphrase there would tell the user something this
+            # route never said.
+            raise HTTPException(status_code=409, detail=EMBEDDING_BINDING_UNAVAILABLE)
         with embedding_config_scope(bound_config) if bound_config else nullcontext():
             _assert_provider_ready(kb_provider)
             accepted_snapshot = _freeze_append_indexing(
@@ -3868,6 +3922,9 @@ async def _create_knowledge_base_owned(
         embedding_selection, embedding_config = _resolve_embedding_form(
             embedding_model, rag_provider
         )
+        # What this knowledge base will embed with. Reported back with the
+        # creation so "no key needed" is discoverable, not a later index error.
+        embedding_setup = _embedding_setup_payload(rag_provider, embedding_selection)
         indexing_snapshot = None
         if indexing_llm:
             raise HTTPException(
@@ -4005,10 +4062,13 @@ async def _create_knowledge_base_owned(
             )
             logger.info(f"KB '{name}' created (no documents yet)")
             return {
-                "message": f"Knowledge base '{name}' created (no documents yet).",
+                "message": _created_message(
+                    f"Knowledge base '{name}' created (no documents yet).", embedding_setup
+                ),
                 "name": name,
                 "files": [],
                 "task_id": None,
+                "embedding_setup": embedding_setup,
             }
 
         uploaded_files, _ = await _save_uploaded_files_off_loop(
@@ -4035,10 +4095,14 @@ async def _create_knowledge_base_owned(
         logger.info(f"KB '{name}' created, processing {len(uploaded_files)} files in background")
 
         return {
-            "message": f"Knowledge base '{name}' created. Processing {len(uploaded_files)} files in background.",
+            "message": _created_message(
+                f"Knowledge base '{name}' created. Processing {len(uploaded_files)} files in background.",
+                embedding_setup,
+            ),
             "name": name,
             "files": uploaded_files,
             "task_id": task_id,
+            "embedding_setup": embedding_setup,
         }
 
     except (HTTPException, AccessError):
@@ -4603,7 +4667,6 @@ async def cancel_indexing_run(kb_name: str, task_id: str):
 
 @router.get("/knowledge-bases/{kb_name}/indexing-readiness")
 async def get_indexing_readiness(kb_name: str):
-    from deeptutor.services.embedding.config import get_embedding_config
     from deeptutor.services.parsing import get_parse_service
     from deeptutor.services.parsing.engines.factory import get_parser
 
@@ -4612,7 +4675,10 @@ async def get_indexing_readiness(kb_name: str):
     parser = get_parser(engine)
     config = parser.resolve_config()
     report = parser.is_ready(config)
-    embedding = get_embedding_config()
+    # Report the embedding target instead of raising: a missing model or key is
+    # a verdict about this knowledge base, not a 500. The network/local split
+    # says whether indexing would leave this machine.
+    embedding = describe_embedding_target()
     return {
         "parser": engine,
         "ready": report.ready,
@@ -4622,7 +4688,10 @@ async def get_indexing_readiness(kb_name: str):
         "mode": getattr(config, "mode", None),
         "device": getattr(config, "device", None),
         "embedding_model": embedding.model,
-        "embedding_configured": bool(embedding.model),
+        "embedding_configured": embedding.configured,
+        "embedding_endpoint": embedding.endpoint,
+        "embedding_requires_network": embedding.requires_network,
+        "embedding_message": embedding.message,
         "source_count": len(
             FileTypeRouter.collect_supported_files(
                 resource.base_dir / resource.name / "raw", recursive=True
