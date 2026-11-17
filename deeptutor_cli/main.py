@@ -16,6 +16,7 @@ from .chat import register as register_chat
 from .common import build_turn_request, console, maybe_run
 from .config_cmd import register as register_config
 from .doctor import register as register_doctor
+from .import_cmd import register as register_import
 from .init_cmd import register as register_init
 from .module import register as register_module
 from .plugin import register as register_plugin
@@ -68,6 +69,7 @@ for owner, module in manifests().items():
         app.add_typer(group, name=command["name"])
 
 register_doctor(app)
+register_import(app)
 register_init(app)
 module_app = typer.Typer(help="Install, remove and inspect optional modules.")
 app.add_typer(module_app, name="module")
