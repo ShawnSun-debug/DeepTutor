@@ -181,16 +181,24 @@ DESTINATION_AUTHORED_PAGE = "authored_page"
 # exists to keep a malformed client from pinning a worker.
 _MAX_IMPORT_FILES = 200
 
-# The authored page destination speaks Markdown only. Plain text and HTML
-# belong to their own destinations and are deliberately absent here.
-_MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown"})
+# The authored page destination speaks Markdown and plain text. HTML needs a
+# conversion step of its own and is deliberately absent here.
+#
+# Ordered tuples rather than sets: this same list is rendered verbatim in the
+# "unsupported extension" reason, so there is exactly one source of truth for
+# what is accepted and no way for the message to drift behind it.
+_MARKDOWN_EXTENSIONS = (".md", ".markdown", ".mdown")
+_PLAIN_TEXT_EXTENSIONS = (".txt",)
+_AUTHORED_PAGE_EXTENSIONS = _MARKDOWN_EXTENSIONS + _PLAIN_TEXT_EXTENSIONS
 
 # Matches the Co-Writer edit ceiling: a longer page could be imported but
 # never edited afterwards, so it is refused rather than silently truncated.
 _MAX_IMPORTED_CHARS = 600_000
 _MAX_TITLE_CHARS = 120
 
-_UNSUPPORTED_EXTENSION_REASON = "unsupported extension (supported: .md, .markdown)"
+_UNSUPPORTED_EXTENSION_REASON = (
+    f"unsupported extension (supported: {', '.join(_AUTHORED_PAGE_EXTENSIONS)})"
+)
 
 
 class ImportFileResult(BaseModel):
@@ -229,6 +237,17 @@ def _authored_page_title(filename: str) -> str | None:
     return stem[:_MAX_TITLE_CHARS]
 
 
+def _strip_leading_bom(text: str) -> str:
+    """Drop one leading byte-order mark.
+
+    FileTypeRouter.decode_bytes tries plain utf-8 before utf-8-sig, so a UTF-8
+    BOM decodes cleanly and stays glued to the text as an invisible first
+    character. Only a *leading* mark is a BOM; a U+FEFF anywhere else is
+    content and is left alone.
+    """
+    return text[1:] if text.startswith("\ufeff") else text
+
+
 def _normalise_newlines(text: str) -> str:
     """Windows and legacy-Mac line endings become LF.
 
@@ -241,11 +260,12 @@ def _normalise_newlines(text: str) -> str:
 async def _import_authored_page(
     file: UploadFile, *, destination: str, parent_id: str | None
 ) -> ImportFileResult:
-    """Import one file as a Markdown page with no block tree.
+    """Import one Markdown or plain-text file as a page with no block tree.
 
     No server-side Markdown-to-blocks conversion happens here: DOCX import
     also writes Markdown only, and the browser promotes the page to blocks the
-    first time it is opened.
+    first time it is opened. Plain text is stored verbatim — the page holds
+    exactly the file's characters, so no escaping or wrapper markup is added.
     """
     filename = (file.filename or "").strip()
     if not filename:
@@ -255,7 +275,7 @@ async def _import_authored_page(
             outcome="failed",
             reason="The upload has no filename.",
         )
-    if Path(filename).suffix.lower() not in _MARKDOWN_EXTENSIONS:
+    if Path(filename).suffix.lower() not in _AUTHORED_PAGE_EXTENSIONS:
         return ImportFileResult(
             filename=filename,
             destination=destination,
@@ -273,7 +293,7 @@ async def _import_authored_page(
             filename=filename, destination=destination, outcome="skipped", reason="empty"
         )
 
-    content = _normalise_newlines(FileTypeRouter.decode_bytes(data))
+    content = _normalise_newlines(_strip_leading_bom(FileTypeRouter.decode_bytes(data)))
     if not content.strip():
         # Whitespace-only is empty for a reader, so it would land as a blank page.
         return ImportFileResult(
