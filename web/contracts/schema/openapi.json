@@ -12090,7 +12090,7 @@
         "type": "object"
       },
       "SyncFolderResponse": {
-        "description": "Response model for a linked-folder sync request.",
+        "description": "Response model for a linked-folder sync request.\n\nQuirky but kept: new_files/modified_files/removed_files are counts while\nfiles/removed are the matching paths.",
         "properties": {
           "file_count": {
             "title": "File Count",
@@ -12124,6 +12124,18 @@
           },
           "new_files": {
             "title": "New Files",
+            "type": "integer"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "removed_files": {
+            "default": 0,
+            "title": "Removed Files",
             "type": "integer"
           },
           "task_id": {
@@ -31280,7 +31292,7 @@
     },
     "/api/knowledge-bases/{kb_name}/sync-folder/{folder_id}": {
       "post": {
-        "description": "Sync files from a linked folder to the knowledge base.\n\nThis scans the linked folder for supported documents and processes\nany new files that haven't been added yet.",
+        "description": "Sync files from a linked folder to the knowledge base.\n\nIndexes the files added or modified since the last sync and leaves the\nothers alone. Files the folder no longer provides are reported in the\nresponse and stay in the knowledge base: deleting an imported document\nremains an explicit action. A source that has gone missing, or that lost\nevery supported file it used to provide, is refused instead of reported as\na successful sync, and a second sync of a source that is already running is\nrefused rather than started twice.",
         "operationId": "sync_folder_api_knowledge_bases__kb_name__sync_folder__folder_id__post",
         "parameters": [
           {

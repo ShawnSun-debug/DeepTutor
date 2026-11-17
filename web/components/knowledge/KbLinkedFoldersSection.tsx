@@ -340,6 +340,13 @@ function LinkedFolderCard({
   const addedAt = formatKnowledgeTimestamp(folder.added_at);
   const lastSync = formatKnowledgeTimestamp(folder.last_sync ?? undefined);
   const actionDisabled = readOnly || busy || unlinking;
+  // A queued or counted run shows the numbers instead of the backend summary,
+  // so the outcome for files the folder no longer provides needs its own line.
+  const showsCounts = Boolean(
+    result && (result.task_id || result.new_files || result.modified_files),
+  );
+  const removedNote =
+    result && result.removed_files > 0 && showsCounts ? result.message : null;
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-3">
@@ -426,6 +433,9 @@ function LinkedFolderCard({
                     modified: result.modified_files,
                   })
                 : result.message}
+            {removedNote && (
+              <span className="mt-1 block">{removedNote}</span>
+            )}
           </span>
         </div>
       )}

@@ -965,6 +965,9 @@ export interface SyncFolderResponse {
   modified_files: number;
   file_count: number;
   task_id: string | null;
+  /** Tracked source files the folder no longer provides; reported, never deleted. */
+  removed: string[];
+  removed_files: number;
 }
 
 export async function probeLinkedFolder(payload: {

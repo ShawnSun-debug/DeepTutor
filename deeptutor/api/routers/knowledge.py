@@ -47,6 +47,7 @@ from deeptutor.knowledge.add_documents import (
     hashes_for_indexed_files,
     remove_raw_document,
 )
+from deeptutor.knowledge.folder_sync_lock import FolderSyncLock
 from deeptutor.knowledge.initializer import KnowledgeBaseInitializer
 from deeptutor.knowledge.kb_types import is_connected_kb, supports_local_raw_files
 from deeptutor.knowledge.manager import KnowledgeBaseManager
@@ -248,7 +249,11 @@ class LinkedFolderInfo(BaseModel):
 
 
 class SyncFolderResponse(BaseModel):
-    """Response model for a linked-folder sync request."""
+    """Response model for a linked-folder sync request.
+
+    Quirky but kept: new_files/modified_files/removed_files are counts while
+    files/removed are the matching paths.
+    """
 
     message: str
     folder_path: str | None = None
@@ -257,6 +262,10 @@ class SyncFolderResponse(BaseModel):
     modified_files: int
     file_count: int
     task_id: str | None
+    # Tracked source files the folder no longer provides. They are reported,
+    # never deleted: removing an imported document stays an explicit action.
+    removed: list[str] = Field(default_factory=list)
+    removed_files: int = 0
 
 
 class SupportedFileTypesInfo(BaseModel):
@@ -4845,6 +4854,57 @@ async def unlink_folder(kb_name: str, folder_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _assert_linked_folder_scannable(folder_path: str, changes: dict) -> None:
+    """Refuse a scan that cannot tell "nothing new" from "nothing there".
+
+    collect_supported_files() returns nothing both for a folder that is gone
+    and for one that is merely up to date, so without this check a missing or
+    emptied source reported a successful sync and stamped last_sync.
+    """
+    if not changes.get("folder_exists", True):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Linked folder '{folder_path}' is missing or is not a directory, "
+                "so nothing was synced."
+            ),
+        )
+    if changes.get("scanned_count", 0) == 0 and changes.get("tracked_count", 0) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Linked folder '{folder_path}' no longer contains any supported files; "
+                f"{changes['tracked_count']} previously synced file(s) are missing from it. "
+                "Nothing was synced."
+            ),
+        )
+
+
+def _removed_files_note(count: int) -> str:
+    """State what a sync did with source files the folder no longer provides."""
+    if count == 1:
+        return (
+            "1 source file is no longer in the folder; "
+            "its imported copy stays in the knowledge base."
+        )
+    return (
+        f"{count} source files are no longer in the folder; "
+        "their imported copies stay in the knowledge base."
+    )
+
+
+async def _run_folder_sync_task(sync_lock: FolderSyncLock, **task_kwargs) -> None:
+    """Run the shared upload task and hand this folder source's lock back.
+
+    Releasing here, rather than in the route, is what makes the guard cover the
+    whole indexing run; the finally keeps that true when indexing raises.
+    """
+    try:
+        await run_upload_processing_task(**task_kwargs)
+    finally:
+        sync_lock.release()
+
+
 @router.post(
     "/knowledge-bases/{kb_name}/sync-folder/{folder_id}",
     response_model=SyncFolderResponse,
@@ -4853,8 +4913,13 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
     """
     Sync files from a linked folder to the knowledge base.
 
-    This scans the linked folder for supported documents and processes
-    any new files that haven't been added yet.
+    Indexes the files added or modified since the last sync and leaves the
+    others alone. Files the folder no longer provides are reported in the
+    response and stay in the knowledge base: deleting an imported document
+    remains an explicit action. A source that has gone missing, or that lost
+    every supported file it used to provide, is refused instead of reported as
+    a successful sync, and a second sync of a source that is already running is
+    refused rather than started twice.
     """
     try:
         manager, kb_name, kb_base_dir = _writable_kb(kb_name)
@@ -4876,9 +4941,12 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
 
         folder_path = folder_info["path"]
 
-        # Check for changes (new or modified files)
+        # Check for changes (new, modified or removed files)
         changes = manager.detect_folder_changes(kb_name, folder_id)
+        _assert_linked_folder_scannable(folder_path, changes)
         files_to_process = changes["new_files"] + changes["modified_files"]
+        removed_files = changes.get("removed_files", [])
+        removed_suffix = f". {_removed_files_note(len(removed_files))}" if removed_files else ""
 
         if not files_to_process:
             # A completed scan is a successful sync even when it found no work.
@@ -4886,18 +4954,31 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
             # truthful for empty and already-current folders as well.
             manager.update_folder_sync_state(kb_name, folder_id, [])
             return SyncFolderResponse(
-                message="No new or modified files to sync",
+                message=f"No new or modified files to sync{removed_suffix}",
                 folder_path=folder_path,
                 files=[],
                 new_files=0,
                 modified_files=0,
                 file_count=0,
                 task_id=None,
+                removed=removed_files,
+                removed_files=len(removed_files),
             )
 
         logger.info(
             f"Syncing {len(files_to_process)} files from folder '{folder_path}' to KB '{kb_name}'"
         )
+        # Refuse a second run instead of queueing one: two indexing runs against
+        # the same source race on the same raw paths and the same sync state.
+        sync_lock = FolderSyncLock.acquire(Path(kb_base_dir) / kb_name, folder_id)
+        if sync_lock is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A sync of '{folder_path}' is already running. "
+                    "Wait for it to finish before syncing this folder again."
+                ),
+            )
         task_id = _build_unique_task_id("kb_upload", f"{kb_name}_folder_{folder_id}")
         get_task_stream_manager().ensure_task(task_id)
 
@@ -4913,29 +4994,37 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
         )
 
         # Add background task to process files
-        accepted_snapshot = _freeze_append_indexing(kb_name, kb_base_dir, kb_provider)
-        background_tasks.add_task(
-            run_upload_processing_task,
-            accepted_indexing_snapshot=accepted_snapshot,
-            kb_name=kb_name,
-            base_dir=str(kb_base_dir),
-            uploaded_file_paths=files_to_process,
-            task_id=task_id,
-            rag_provider=kb_provider,
-            folder_id=folder_id,  # Pass folder_id to update state on success
-            folder_root=folder_path,  # Preserve each file's path relative to this root
-            owner=get_current_user(),
-            storage_workspace_id=storage_workspace_id,
-        )
+        try:
+            accepted_snapshot = _freeze_append_indexing(kb_name, kb_base_dir, kb_provider)
+            background_tasks.add_task(
+                _run_folder_sync_task,
+                sync_lock=sync_lock,
+                accepted_indexing_snapshot=accepted_snapshot,
+                kb_name=kb_name,
+                base_dir=str(kb_base_dir),
+                uploaded_file_paths=files_to_process,
+                task_id=task_id,
+                rag_provider=kb_provider,
+                folder_id=folder_id,  # Pass folder_id to update state on success
+                folder_root=folder_path,  # Preserve each file's path relative to this root
+                owner=get_current_user(),
+                storage_workspace_id=storage_workspace_id,
+            )
+        except BaseException:
+            # Nothing was queued, so the source must not stay locked.
+            sync_lock.release()
+            raise
 
         return SyncFolderResponse(
-            message=f"Syncing {len(files_to_process)} files from linked folder",
+            message=f"Syncing {len(files_to_process)} files from linked folder{removed_suffix}",
             folder_path=folder_path,
             files=files_to_process,
             new_files=changes["new_count"],
             modified_files=changes["modified_count"],
             file_count=len(files_to_process),
             task_id=task_id,
+            removed=removed_files,
+            removed_files=len(removed_files),
         )
     except (HTTPException, AccessError):
         raise
