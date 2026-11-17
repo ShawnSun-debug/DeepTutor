@@ -223,11 +223,15 @@ def test_malformed_requests_are_client_errors(client: TestClient) -> None:
     assert client.post("/api/imports/documents").status_code == 400
     unknown = client.post(
         "/api/imports/documents",
-        data={"destination": "knowledge_base"},
+        data={"destination": "blog_post"},
         files=[_markdown("a.md", b"# a\n")],
     )
     assert unknown.status_code == 400
-    assert "authored_page" in unknown.json()["detail"]
+    detail = unknown.json()["detail"]
+    assert "authored_page" in detail
+    # The supported list is the dispatch table, so a registered destination the
+    # caller forgot to target is never mistaken for an unknown one.
+    assert "knowledge_base" in detail
 
 
 def test_parent_page_is_passed_through(client: TestClient) -> None:

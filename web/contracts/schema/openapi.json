@@ -1133,6 +1133,17 @@
               }
             ],
             "title": "Parent Id"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
           }
         },
         "title": "Body_import_documents_api_imports_documents_post",
@@ -4388,6 +4399,17 @@
           "skipped": {
             "title": "Skipped",
             "type": "integer"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -5860,6 +5882,20 @@
               }
             ],
             "title": "Reason"
+          },
+          "stored_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored Paths"
           }
         },
         "required": [
@@ -26101,7 +26137,7 @@
     },
     "/api/imports/documents": {
       "post": {
-        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination — is an HTTP error, because there is nothing\nper-file to report for it.",
+        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination, a destination missing the thing it names —\nis an HTTP error, because there is nothing per-file to report for it.\n\n``target`` names the instance inside the destination: the knowledge base\nto import into. It is used verbatim, never case-folded, because a\nknowledge-base name is user data (see the note above ``_IMPORTERS``).",
         "operationId": "import_documents_api_imports_documents_post",
         "parameters": [
           {
