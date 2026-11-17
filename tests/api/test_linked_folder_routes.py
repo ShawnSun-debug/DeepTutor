@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import os
 from pathlib import Path
+import shutil
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -158,6 +161,8 @@ def test_noop_sync_records_success_and_returns_sync_contract(
         "modified_files": 0,
         "file_count": 0,
         "task_id": None,
+        "removed": [],
+        "removed_files": 0,
     }
     assert manager.update_calls == [("kb", "folder-1", [])]
 
@@ -356,3 +361,203 @@ def test_failed_folder_task_does_not_advance_sync_state(
 
     assert manager.update_calls == []
     assert manager.folder["last_sync"] == "previous-success"
+
+
+# ---------------------------------------------------------------------------
+# Folder integrity, removals and the one-run-per-source guard.
+#
+# These drive the real KnowledgeBaseManager on tmp_path so the change detection
+# deciding "new / modified / unchanged / removed" is the production one. Only
+# the indexing task is replaced by a recorder: parsing, embedding and indexing
+# have their own tests and are not what this route owns.
+# ---------------------------------------------------------------------------
+
+
+class _LinkedFolderKB:
+    """A real KB manager with one linked folder and a recorder for dispatch."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deeptutor.knowledge.manager import KnowledgeBaseManager
+
+        base = tmp_path / "kbs"
+        base.mkdir()
+        self.manager = KnowledgeBaseManager(base_dir=str(base))
+        (base / "kb").mkdir()
+        self.manager.register_knowledge_base("kb")
+        self.kb_dir = base / "kb"
+
+        self.source = tmp_path / "notes"
+        self.source.mkdir()
+        self.keep = self.source / "keep.md"
+        self.keep.write_text("keep", encoding="utf-8")
+        self.drop = self.source / "drop.md"
+        self.drop.write_text("drop", encoding="utf-8")
+
+        self.folder = self.manager.link_folder("kb", str(self.source))
+        self.dispatched: list[dict] = []
+
+        monkeypatch.setattr(knowledge_router_module, "get_kb_manager", lambda: self.manager)
+        monkeypatch.setattr(knowledge_router_module, "get_current_user", lambda: None)
+        monkeypatch.setattr(
+            knowledge_router_module, "run_upload_processing_task", self._record_dispatch
+        )
+
+    async def _record_dispatch(self, **kwargs) -> None:
+        self.dispatched.append(kwargs)
+
+    def sync(self, client: TestClient):
+        return client.post(f"/api/knowledge-bases/kb/sync-folder/{self.folder['id']}")
+
+    def record_synced(self, *paths: Path) -> None:
+        """Apply what a completed indexing run records, so the next scan sees them."""
+        self.manager.update_folder_sync_state("kb", self.folder["id"], [str(p) for p in paths])
+
+    def stored_folder(self) -> dict:
+        return self.manager.get_linked_folders("kb")[0]
+
+
+def _advance_mtime(path: Path, seconds: float) -> None:
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + seconds))
+
+
+def paths_of(dispatch: dict) -> list[str]:
+    return [str(path) for path in dispatch["uploaded_file_paths"]]
+
+
+@pytest.fixture()
+def linked_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LinkedFolderKB:
+    return _LinkedFolderKB(tmp_path, monkeypatch)
+
+
+def test_sync_dispatches_new_and_modified_files_only(linked_kb: _LinkedFolderKB) -> None:
+    with TestClient(_build_app()) as client:
+        first = linked_kb.sync(client)
+        assert first.status_code == 200
+        assert sorted(paths_of(linked_kb.dispatched[0])) == sorted(
+            [str(linked_kb.keep), str(linked_kb.drop)]
+        )
+        assert linked_kb.dispatched[0]["folder_root"] == str(linked_kb.source)
+
+        # The completed run records both files; one of them then changes on disk.
+        linked_kb.record_synced(linked_kb.keep, linked_kb.drop)
+        _advance_mtime(linked_kb.drop, 60)
+
+        second = linked_kb.sync(client)
+
+    body = second.json()
+    assert second.status_code == 200
+    assert body["new_files"] == 0
+    assert body["modified_files"] == 1
+    assert body["files"] == [str(linked_kb.drop)]
+    # The unchanged file is not re-indexed.
+    assert paths_of(linked_kb.dispatched[1]) == [str(linked_kb.drop)]
+    assert linked_kb.dispatched[1]["folder_root"] == str(linked_kb.source)
+
+
+def test_sync_reports_removed_files_and_keeps_their_imported_copies(
+    linked_kb: _LinkedFolderKB,
+) -> None:
+    imported = linked_kb.kb_dir / "raw" / "drop.md"
+    imported.parent.mkdir(parents=True)
+    imported.write_text("imported", encoding="utf-8")
+    linked_kb.record_synced(linked_kb.keep, linked_kb.drop)
+    linked_kb.drop.unlink()
+
+    with TestClient(_build_app()) as client:
+        response = linked_kb.sync(client)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["removed_files"] == 1
+    assert body["removed"] == [str(linked_kb.drop)]
+    # The knowledge base's existing deletion semantics stay explicit: a sync
+    # never deletes an imported document behind the user's back.
+    assert imported.read_text(encoding="utf-8") == "imported"
+    assert "no longer in the folder" in body["message"]
+    assert "knowledge base" in body["message"]
+    assert linked_kb.dispatched == []
+    assert linked_kb.stored_folder()["last_sync"] is not None
+
+
+def test_sync_refuses_a_linked_folder_that_is_gone(linked_kb: _LinkedFolderKB) -> None:
+    linked_kb.record_synced(linked_kb.keep, linked_kb.drop)
+    synced_at = linked_kb.stored_folder()["last_sync"]
+    shutil.rmtree(linked_kb.source)
+
+    with TestClient(_build_app()) as client:
+        response = linked_kb.sync(client)
+
+    assert response.status_code == 409
+    assert str(linked_kb.source) in response.json()["detail"]
+    # A failed scan must not look like a successful sync.
+    assert linked_kb.stored_folder()["last_sync"] == synced_at
+    assert linked_kb.dispatched == []
+
+
+def test_sync_refuses_a_linked_folder_that_lost_every_file(
+    linked_kb: _LinkedFolderKB,
+) -> None:
+    linked_kb.record_synced(linked_kb.keep, linked_kb.drop)
+    synced_at = linked_kb.stored_folder()["last_sync"]
+    linked_kb.keep.unlink()
+    linked_kb.drop.unlink()
+
+    with TestClient(_build_app()) as client:
+        response = linked_kb.sync(client)
+
+    assert response.status_code == 409
+    assert str(linked_kb.source) in response.json()["detail"]
+    assert linked_kb.stored_folder()["last_sync"] == synced_at
+    assert linked_kb.dispatched == []
+
+
+def test_sync_of_a_new_folder_without_supported_files_is_a_successful_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linked_kb = _LinkedFolderKB(tmp_path, monkeypatch)
+    linked_kb.keep.unlink()
+    linked_kb.drop.unlink()
+
+    with TestClient(_build_app()) as client:
+        response = linked_kb.sync(client)
+
+    assert response.status_code == 200
+    assert response.json()["file_count"] == 0
+    assert response.json()["task_id"] is None
+    assert linked_kb.dispatched == []
+
+
+def test_a_second_sync_while_the_first_is_running_dispatches_nothing(
+    linked_kb: _LinkedFolderKB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = threading.Event()
+    started = threading.Event()
+    dispatched: list[dict] = []
+
+    async def _blocking(**kwargs) -> None:
+        dispatched.append(kwargs)
+        started.set()
+        await asyncio.to_thread(gate.wait, 30)
+
+    monkeypatch.setattr(knowledge_router_module, "run_upload_processing_task", _blocking)
+
+    first: dict = {}
+    with TestClient(_build_app()) as client:
+
+        def _run_first() -> None:
+            first["response"] = linked_kb.sync(client)
+
+        worker = threading.Thread(target=_run_first, daemon=True)
+        worker.start()
+        try:
+            assert started.wait(30), "the first sync never reached its indexing task"
+            second = linked_kb.sync(client)
+        finally:
+            gate.set()
+            worker.join(60)
+
+    assert first["response"].status_code == 200
+    assert second.status_code == 409
+    assert "already" in second.json()["detail"].lower()
+    assert len(dispatched) == 1

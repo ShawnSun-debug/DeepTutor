@@ -23,6 +23,7 @@ own Space category. Re-importing the same folder is idempotent (dedup by id).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
@@ -38,6 +39,7 @@ from deeptutor.api.utils.upload_reader import (
     UploadTooLarge,
     read_upload_bytes,
 )
+from deeptutor.co_writer.html_converter import HtmlConversionError, html_to_markdown
 from deeptutor.co_writer.storage import get_co_writer_storage
 from deeptutor.services.notebook import notebook_manager
 from deeptutor.services.notebook.service import RecordType
@@ -187,14 +189,23 @@ DESTINATION_COLLECTION = "collection"
 # exists to keep a malformed client from pinning a worker.
 _MAX_IMPORT_FILES = 200
 
-# The authored page destination speaks Markdown only. Plain text and HTML
-# belong to their own destinations and are deliberately absent here.
-_MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown"})
+# The authored page destination speaks Markdown, plain text and HTML. Markdown
+# and plain text are stored as they are; HTML is converted to Markdown first.
+#
+# Ordered tuples rather than sets: this same list is rendered verbatim in the
+# "unsupported extension" reason, so there is exactly one source of truth for
+# what is accepted and no way for the message to drift behind it.
+_MARKDOWN_EXTENSIONS = (".md", ".markdown", ".mdown")
+_PLAIN_TEXT_EXTENSIONS = (".txt",)
+_HTML_EXTENSIONS = (".html", ".htm")
+_AUTHORED_PAGE_EXTENSIONS = _MARKDOWN_EXTENSIONS + _PLAIN_TEXT_EXTENSIONS + _HTML_EXTENSIONS
 
-# A collection record stores text, so the plain-text family belongs here. HTML
-# is absent on purpose: it needs the authored-page converter to become readable
-# Markdown, and a record holding raw tags would be worse than a refusal.
-_COLLECTION_EXTENSIONS = frozenset({".md", ".markdown", ".txt"})
+# A collection record stores text, so the Markdown and plain-text families
+# belong here. HTML is absent on purpose: it needs the authored-page converter
+# to become readable Markdown, and a record holding raw tags would be worse than
+# a refusal. Built from the same tuples the authored page uses, so the accepted
+# list and the reason rendered below cannot drift apart.
+_COLLECTION_EXTENSIONS = _MARKDOWN_EXTENSIONS + _PLAIN_TEXT_EXTENSIONS
 
 # A record summary is one scannable line in a list, not a document.
 _MAX_RECORD_SUMMARY_CHARS = 240
@@ -204,8 +215,12 @@ _MAX_RECORD_SUMMARY_CHARS = 240
 _MAX_IMPORTED_CHARS = 600_000
 _MAX_TITLE_CHARS = 120
 
-_AUTHORED_PAGE_UNSUPPORTED_EXTENSION_REASON = "unsupported extension (supported: .md, .markdown)"
-_COLLECTION_UNSUPPORTED_EXTENSION_REASON = "unsupported extension (supported: .md, .markdown, .txt)"
+_UNSUPPORTED_EXTENSION_REASON = (
+    f"unsupported extension (supported: {', '.join(_AUTHORED_PAGE_EXTENSIONS)})"
+)
+_COLLECTION_UNSUPPORTED_EXTENSION_REASON = (
+    f"unsupported extension (supported: {', '.join(_COLLECTION_EXTENSIONS)})"
+)
 
 
 class ImportFileResult(BaseModel):
@@ -268,6 +283,17 @@ def _title_from_filename(filename: str) -> str | None:
     return stem[:_MAX_TITLE_CHARS]
 
 
+def _strip_leading_bom(text: str) -> str:
+    """Drop one leading byte-order mark.
+
+    FileTypeRouter.decode_bytes tries plain utf-8 before utf-8-sig, so a UTF-8
+    BOM decodes cleanly and stays glued to the text as an invisible first
+    character. Only a *leading* mark is a BOM; a U+FEFF anywhere else is
+    content and is left alone.
+    """
+    return text[1:] if text.startswith("\ufeff") else text
+
+
 def _normalise_newlines(text: str) -> str:
     """Windows and legacy-Mac line endings become LF.
 
@@ -278,11 +304,12 @@ def _normalise_newlines(text: str) -> str:
 
 
 async def _import_authored_page(file: UploadFile, target: ImportTarget) -> ImportFileResult:
-    """Import one file as a Markdown page with no block tree.
+    """Import one file as a page with no block tree.
 
     No server-side Markdown-to-blocks conversion happens here: DOCX import
     also writes Markdown only, and the browser promotes the page to blocks the
-    first time it is opened.
+    first time it is opened. Plain text is stored verbatim — the page holds
+    exactly the file's characters, so no escaping or wrapper markup is added.
     """
     filename = (file.filename or "").strip()
     if not filename:
@@ -292,12 +319,13 @@ async def _import_authored_page(file: UploadFile, target: ImportTarget) -> Impor
             outcome="failed",
             reason="The upload has no filename.",
         )
-    if Path(filename).suffix.lower() not in _MARKDOWN_EXTENSIONS:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _AUTHORED_PAGE_EXTENSIONS:
         return ImportFileResult(
             filename=filename,
             destination=target.destination,
             outcome="skipped",
-            reason=_AUTHORED_PAGE_UNSUPPORTED_EXTENSION_REASON,
+            reason=_UNSUPPORTED_EXTENSION_REASON,
         )
     try:
         data = await read_upload_bytes(file)
@@ -310,7 +338,20 @@ async def _import_authored_page(file: UploadFile, target: ImportTarget) -> Impor
             filename=filename, destination=target.destination, outcome="skipped", reason="empty"
         )
 
-    content = _normalise_newlines(FileTypeRouter.decode_bytes(data))
+    if suffix in _HTML_EXTENSIONS:
+        # The parser is CPU-bound on a large page, so keep it off the loop.
+        try:
+            content = await asyncio.to_thread(html_to_markdown, data, filename)
+        except HtmlConversionError as exc:
+            return ImportFileResult(
+                filename=filename,
+                destination=target.destination,
+                outcome="failed",
+                reason=str(exc),
+            )
+    else:
+        content = FileTypeRouter.decode_bytes(data)
+    content = _normalise_newlines(_strip_leading_bom(content))
     if not content.strip():
         # Whitespace-only is empty for a reader, so it would land as a blank page.
         return ImportFileResult(

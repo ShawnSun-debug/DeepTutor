@@ -295,7 +295,7 @@ def test_unsupported_empty_and_oversized_files_keep_their_own_outcome(
     assert outcomes["second.txt"]["outcome"] == "imported"
     assert outcomes["scan.pdf"]["outcome"] == "skipped"
     assert outcomes["scan.pdf"]["reason"] == (
-        "unsupported extension (supported: .md, .markdown, .txt)"
+        "unsupported extension (supported: .md, .markdown, .mdown, .txt)"
     )
     assert outcomes["empty.md"]["outcome"] == "skipped"
     assert outcomes["empty.md"]["reason"] == "empty"

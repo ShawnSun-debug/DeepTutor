@@ -70,6 +70,10 @@ def _markdown(name: str, body: bytes):
     return ("files", (name, body, "text/markdown"))
 
 
+def _plain_text(name: str, body: bytes):
+    return ("files", (name, body, "text/plain"))
+
+
 def _paragraph(text: str = "Hello") -> dict:
     return {
         "id": "a",
@@ -126,6 +130,17 @@ def test_line_endings_are_normalised_to_lf(client: TestClient) -> None:
     assert document["content"] == "# A\n\nB\nC\n"
 
 
+def test_plain_text_line_endings_are_normalised_to_lf(client: TestClient) -> None:
+    """Text files get the identical newline treatment as Markdown."""
+    response = client.post(
+        "/api/imports/documents",
+        files=[_plain_text("crlf.txt", b"line1\r\nline2\rline3\r\n")],
+    )
+    assert response.status_code == 200
+    document = client.get(f"/api/documents/{response.json()['files'][0]['document_id']}").json()
+    assert document["content"] == "line1\nline2\nline3\n"
+
+
 def test_title_falls_back_to_content_when_the_name_is_unusable(client: TestClient) -> None:
     """A punctuation-only stem is not a usable title, so the content names the page."""
     response = client.post(
@@ -156,6 +171,74 @@ def test_markdown_extension_is_case_insensitive(client: TestClient) -> None:
     assert [item["outcome"] for item in response.json()["files"]] == ["imported", "imported"]
 
 
+def test_mdown_is_accepted_as_markdown(client: TestClient) -> None:
+    """The long-form Markdown variants are Markdown, not an unsupported type."""
+    response = client.post(
+        "/api/imports/documents",
+        files=[_markdown("Variant Test.mdown", b"# Variant\n\nBody.\n")],
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()["files"][0]
+    assert result["outcome"] == "imported"
+    assert result["reason"] is None
+    document = client.get(f"/api/documents/{result['document_id']}").json()
+    assert document["title"] == "Variant Test"
+    assert document["content"] == "# Variant\n\nBody.\n"
+
+
+def test_plain_text_file_becomes_an_editable_page(client: TestClient) -> None:
+    """A .txt file lands as one ordinary page, with the same contract as Markdown."""
+    response = client.post(
+        "/api/imports/documents",
+        files=[_plain_text("Shopping List.txt", b"Milk\nEggs\n")],
+    )
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    assert len(payload["files"]) == 1
+    result = payload["files"][0]
+    assert result["filename"] == "Shopping List.txt"
+    assert result["destination"] == "authored_page"
+    assert result["outcome"] == "imported"
+    assert result["reason"] is None
+
+    doc_id = result["document_id"]
+    document = client.get(f"/api/documents/{doc_id}").json()
+    assert document["title"] == "Shopping List"
+    # A .txt body is stored verbatim: no escaping, no wrapper markup.
+    assert document["content"] == "Milk\nEggs\n"
+    # Plain text is a Markdown page too, so the browser promotes it on first open
+    # exactly like a DOCX or Markdown import.
+    assert document["blocks"] is None
+
+    # Editable through the same editor path an authored page uses.
+    edited = client.put(
+        f"/api/documents/{doc_id}",
+        json={"blocks": [_paragraph()], "expected_revision": document["revision"]},
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["content"] == "Hello"
+
+
+def test_utf8_byte_order_mark_does_not_survive_import(client: TestClient) -> None:
+    """A BOM is a byte-level artifact, not the first character of the page.
+
+    FileTypeRouter.decode_bytes tries plain utf-8 before utf-8-sig, so a BOM
+    decodes cleanly and stays glued to the text unless it is removed here.
+    """
+    body = "\ufeff# Title\n\nBody.\n".encode("utf-8")
+    response = client.post(
+        "/api/imports/documents",
+        files=[_markdown("bom.md", body), _plain_text("bom.txt", body)],
+    )
+    assert response.status_code == 200, response.text
+    for result in response.json()["files"]:
+        assert result["outcome"] == "imported"
+        document = client.get(f"/api/documents/{result['document_id']}").json()
+        assert not document["content"].startswith("\ufeff")
+        assert document["content"] == "# Title\n\nBody.\n"
+
+
 def test_gbk_text_is_decoded(client: TestClient) -> None:
     """Older Chinese notes are GBK, not UTF-8; both must arrive readable."""
     response = client.post(
@@ -167,13 +250,28 @@ def test_gbk_text_is_decoded(client: TestClient) -> None:
     assert document["content"] == "# 笔记"
 
 
+def test_plain_text_gbk_is_decoded(client: TestClient) -> None:
+    """An older Chinese note saved as GBK must arrive readable, not as mojibake."""
+    body = "课堂笔记\n\n第一行\n".encode("gbk")
+    response = client.post(
+        "/api/imports/documents",
+        files=[_plain_text("笔记.txt", body)],
+    )
+    assert response.status_code == 200
+    result = response.json()["files"][0]
+    assert result["outcome"] == "imported"
+    document = client.get(f"/api/documents/{result['document_id']}").json()
+    assert document["content"] == "课堂笔记\n\n第一行\n"
+    assert "\ufffd" not in document["content"]
+
+
 def test_one_bad_file_never_fails_the_batch(client: TestClient) -> None:
     """Unsupported, empty, blank and oversized-everything files fail individually."""
     response = client.post(
         "/api/imports/documents",
         files=[
             _markdown("good.md", b"# Good\n\nFine.\n"),
-            _markdown("notes.txt", b"plain text"),
+            _markdown("report.docx", b"plain text"),
             _markdown("empty.md", b""),
             _markdown("blank.md", b"\n\n   \n"),
             _markdown("toolong.md", b"x" * 600_001),
@@ -188,8 +286,11 @@ def test_one_bad_file_never_fails_the_batch(client: TestClient) -> None:
     assert [item["filename"] for item in payload["files"]] == list(outcomes)
     assert outcomes["good.md"]["outcome"] == "imported"
     assert outcomes["second.md"]["outcome"] == "imported"
-    assert outcomes["notes.txt"]["outcome"] == "skipped"
-    assert outcomes["notes.txt"]["reason"] == "unsupported extension (supported: .md, .markdown)"
+    assert outcomes["report.docx"]["outcome"] == "skipped"
+    assert (
+        outcomes["report.docx"]["reason"]
+        == "unsupported extension (supported: .md, .markdown, .mdown, .txt, .html, .htm)"
+    )
     assert outcomes["empty.md"]["outcome"] == "skipped"
     assert outcomes["empty.md"]["reason"] == "empty"
     assert outcomes["blank.md"]["outcome"] == "skipped"
@@ -202,7 +303,29 @@ def test_one_bad_file_never_fails_the_batch(client: TestClient) -> None:
     assert payload["destination"] == "authored_page"
     for item in payload["files"]:
         assert item["destination"] == "authored_page"
-    assert outcomes["notes.txt"]["document_id"] is None
+    assert outcomes["report.docx"]["document_id"] is None
+
+
+def test_plain_text_content_cap_is_inclusive_at_the_boundary(client: TestClient) -> None:
+    """Exactly at the cap is a valid page; one character over is refused."""
+    response = client.post(
+        "/api/imports/documents",
+        files=[
+            _plain_text("exact.txt", b"x" * 600_000),
+            _plain_text("over.txt", b"x" * 600_001),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    exact, over = response.json()["files"]
+    assert exact["outcome"] == "imported"
+    assert exact["reason"] is None
+    document = client.get(f"/api/documents/{exact['document_id']}").json()
+    assert document["content"] == "x" * 600_000
+
+    # Refused, never silently truncated: the user is told the limit.
+    assert over["outcome"] == "failed"
+    assert over["document_id"] is None
+    assert "600,000 character limit" in over["reason"]
 
 
 def test_file_over_the_upload_ceiling_fails_with_the_limit_stated(client: TestClient) -> None:
@@ -247,7 +370,7 @@ def test_a_batch_where_every_file_fails_is_still_a_200(client: TestClient) -> No
     """A bad batch is not a bad request: there is a per-file outcome for each."""
     response = client.post(
         "/api/imports/documents",
-        files=[_markdown("a.txt", b"x"), _markdown("b.txt", b"y")],
+        files=[_markdown("a.docx", b"x"), _markdown("b.docx", b"y")],
     )
     assert response.status_code == 200
     assert response.json()["imported"] == 0
