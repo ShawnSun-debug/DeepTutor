@@ -22,6 +22,7 @@ own Space category. Re-importing the same folder is idempotent (dedup by id).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 import logging
 from pathlib import Path
@@ -35,6 +36,7 @@ from deeptutor.api.utils.upload_reader import (
     UploadTooLarge,
     read_upload_bytes,
 )
+from deeptutor.co_writer.html_converter import HtmlConversionError, html_to_markdown
 from deeptutor.co_writer.storage import get_co_writer_storage
 from deeptutor.services.session import (
     get_sqlite_session_store,
@@ -181,15 +183,16 @@ DESTINATION_AUTHORED_PAGE = "authored_page"
 # exists to keep a malformed client from pinning a worker.
 _MAX_IMPORT_FILES = 200
 
-# The authored page destination speaks Markdown and plain text. HTML needs a
-# conversion step of its own and is deliberately absent here.
+# The authored page destination speaks Markdown, plain text and HTML. Markdown
+# and plain text are stored as they are; HTML is converted to Markdown first.
 #
 # Ordered tuples rather than sets: this same list is rendered verbatim in the
 # "unsupported extension" reason, so there is exactly one source of truth for
 # what is accepted and no way for the message to drift behind it.
 _MARKDOWN_EXTENSIONS = (".md", ".markdown", ".mdown")
 _PLAIN_TEXT_EXTENSIONS = (".txt",)
-_AUTHORED_PAGE_EXTENSIONS = _MARKDOWN_EXTENSIONS + _PLAIN_TEXT_EXTENSIONS
+_HTML_EXTENSIONS = (".html", ".htm")
+_AUTHORED_PAGE_EXTENSIONS = _MARKDOWN_EXTENSIONS + _PLAIN_TEXT_EXTENSIONS + _HTML_EXTENSIONS
 
 # Matches the Co-Writer edit ceiling: a longer page could be imported but
 # never edited afterwards, so it is refused rather than silently truncated.
@@ -275,7 +278,8 @@ async def _import_authored_page(
             outcome="failed",
             reason="The upload has no filename.",
         )
-    if Path(filename).suffix.lower() not in _AUTHORED_PAGE_EXTENSIONS:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _AUTHORED_PAGE_EXTENSIONS:
         return ImportFileResult(
             filename=filename,
             destination=destination,
@@ -293,7 +297,20 @@ async def _import_authored_page(
             filename=filename, destination=destination, outcome="skipped", reason="empty"
         )
 
-    content = _normalise_newlines(_strip_leading_bom(FileTypeRouter.decode_bytes(data)))
+    if suffix in _HTML_EXTENSIONS:
+        # The parser is CPU-bound on a large page, so keep it off the loop.
+        try:
+            content = await asyncio.to_thread(html_to_markdown, data, filename)
+        except HtmlConversionError as exc:
+            return ImportFileResult(
+                filename=filename,
+                destination=destination,
+                outcome="failed",
+                reason=str(exc),
+            )
+    else:
+        content = FileTypeRouter.decode_bytes(data)
+    content = _normalise_newlines(_strip_leading_bom(content))
     if not content.strip():
         # Whitespace-only is empty for a reader, so it would land as a blank page.
         return ImportFileResult(
