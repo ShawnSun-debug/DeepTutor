@@ -232,3 +232,22 @@ def test_a_linked_folder_that_is_gone_is_recorded_not_raised(world: _StartupWorl
     assert str(world.source_a) in outcomes[0].detail
     assert world.folder_ids() == {world.folder_b["id"]}
     assert str(world.source_a) in world.progress()["error"]
+
+
+def test_one_unreadable_kb_does_not_stop_the_pass(world: _StartupWorld) -> None:
+    """A KB whose linked folders cannot be read must not cost the others their sync."""
+    (world.base / "broken").mkdir()
+    world.manager.register_knowledge_base("broken")
+    healthy = world.manager.get_linked_folders
+
+    def _folders(kb_name: str):
+        if kb_name == "broken":
+            raise RuntimeError("metadata.json is unreadable")
+        return healthy(kb_name)
+
+    world.monkeypatch.setattr(world.manager, "get_linked_folders", _folders)
+
+    outcomes = asyncio.run(world.startup.run_startup_folder_sync(manager=world.manager))
+
+    assert len(outcomes) == 2
+    assert world.folder_ids() == {world.folder_a["id"], world.folder_b["id"]}

@@ -119,7 +119,7 @@ class StartupFolderSync:
                 folders = manager.get_linked_folders(kb_name) or []
             except Exception:
                 logger.warning(
-                    "Skipping linked folders of KB '%s' during the startup sync: %s",
+                    "Skipping the linked folders of KB '%s' in the startup sync",
                     kb_name,
                     exc_info=True,
                 )
