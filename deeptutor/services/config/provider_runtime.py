@@ -1189,6 +1189,27 @@ def _is_nonpublic_embedding_host(hostname: str) -> bool:
     return bool(address.is_private or address.is_loopback or address.is_link_local)
 
 
+def _is_local_embedding_endpoint(api_base: str | None) -> bool:
+    """Whether an embedding endpoint lives on this machine or the local network.
+
+    Loopback and mDNS names were always local. A Docker Compose service name
+    (http://ollama:11434/api/embed) and a LAN address (http://192.168.1.40:1234)
+    are the same situation for the user -- the server is theirs and uses no API
+    key -- and Lemonade profiles already resolve that way (#1782). Embedding
+    resolution widens the rule to every non-public host; the LLM path keeps its
+    narrower one, so chat provider detection is unchanged.
+    """
+    if not api_base:
+        return False
+    if _is_local_base_url(api_base):
+        return True
+    try:
+        parsed = urlparse(api_base if "://" in api_base else f"http://{api_base}")
+    except ValueError:
+        return False
+    return _is_nonpublic_embedding_host(parsed.hostname or "")
+
+
 def _is_legacy_lemonade_endpoint(api_base: str) -> bool:
     """Keyless Lemonade servers saved as a generic OpenAI-compatible URL.
 
@@ -1223,7 +1244,7 @@ def _resolve_embedding_provider(
         # name is mistaken for a remote embedding vendor (#1568, #1782).
         return "lemonade"
 
-    if _is_local_base_url(api_base) and hint in {None, "custom", "openai"}:
+    if _is_local_embedding_endpoint(api_base) and hint in {None, "custom", "openai"}:
         # Ollama also serves OpenAI-compatible embeddings on /v1/embeddings.
         # Select the wire protocol by path, not by a port substring.
         endpoint = urlparse(api_base if "://" in api_base else f"http://{api_base}")
