@@ -4401,6 +4401,13 @@
             "title": "Files",
             "type": "array"
           },
+          "groups": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ImportDestinationGroup"
+            },
+            "title": "Groups",
+            "type": "object"
+          },
           "imported": {
             "title": "Imported",
             "type": "integer"
@@ -5848,6 +5855,51 @@
           "model_id"
         ],
         "title": "ImageDescriptionModelSelection",
+        "type": "object"
+      },
+      "ImportDestinationGroup": {
+        "description": "One destination's share of a batch, so a UI can render it as a section.",
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "files": {
+            "title": "Files",
+            "type": "integer"
+          },
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "destination",
+          "files",
+          "imported",
+          "skipped",
+          "failed"
+        ],
+        "title": "ImportDestinationGroup",
         "type": "object"
       },
       "ImportFileResult": {
@@ -26171,7 +26223,7 @@
     },
     "/api/imports/documents": {
       "post": {
-        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination, a destination missing the thing it names —\nis an HTTP error, because there is nothing per-file to report for it.\n\n`target` names the instance inside the destination: the knowledge base to\nimport into. It is used verbatim, never case-folded, because a\nknowledge-base name is user data (see the note above `_IMPORTERS`).",
+        "description": "Import a batch of files and report one outcome per file.\n\nA bad file never fails the batch: it gets its own skipped or failed entry\nand the rest still import. Only a malformed request — no files, too many\nfiles, an unknown destination, a destination missing the thing it names —\nis an HTTP error, because there is nothing per-file to report for it.\n\n`target` names the instance inside the destination: the knowledge base to\nimport into. It is used verbatim, never case-folded, because a\nknowledge-base name is user data (see the note above `_IMPORTERS`).\n\n`destination=\"auto\"` routes each file by type instead of sending the whole\nbatch to one store: HTML and (without named collections) Markdown and plain\ntext become notes, Markdown and plain text with named collections become\nrecords, and everything the knowledge-base engine accepts goes to the named\nknowledge base. The routing table and its reasoning live above\n`_knowledge_base_extensions`. Every file still reports the store it\nactually landed in, and `groups` rolls those results up per destination.",
         "operationId": "import_documents_api_imports_documents_post",
         "parameters": [
           {

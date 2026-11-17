@@ -2218,6 +2218,14 @@ export interface paths {
      *     `target` names the instance inside the destination: the knowledge base to
      *     import into. It is used verbatim, never case-folded, because a
      *     knowledge-base name is user data (see the note above `_IMPORTERS`).
+     *
+     *     `destination="auto"` routes each file by type instead of sending the whole
+     *     batch to one store: HTML and (without named collections) Markdown and plain
+     *     text become notes, Markdown and plain text with named collections become
+     *     records, and everything the knowledge-base engine accepts goes to the named
+     *     knowledge base. The routing table and its reasoning live above
+     *     `_knowledge_base_extensions`. Every file still reports the store it
+     *     actually landed in, and `groups` rolls those results up per destination.
      */
     readonly post: operations["import_documents_api_imports_documents_post"];
     readonly delete?: never;
@@ -14025,10 +14033,16 @@ export interface components {
       readonly failed: number;
       /** Files */
       readonly files: readonly components["schemas"]["ImportFileResult"][];
+      /** Groups */
+      readonly groups?: {
+        readonly [key: string]: components["schemas"]["ImportDestinationGroup"];
+      };
       /** Imported */
       readonly imported: number;
       /** Skipped */
       readonly skipped: number;
+      /** Task Id */
+      readonly task_id?: string | null;
     };
     /**
      * DocumentParsingInstall
@@ -14608,6 +14622,24 @@ export interface components {
       readonly id: string;
       /** Name */
       readonly name: string;
+    };
+    /**
+     * ImportDestinationGroup
+     * @description One destination's share of a batch, so a UI can render it as a section.
+     */
+    readonly ImportDestinationGroup: {
+      /** Destination */
+      readonly destination: string;
+      /** Failed */
+      readonly failed: number;
+      /** Files */
+      readonly files: number;
+      /** Imported */
+      readonly imported: number;
+      /** Skipped */
+      readonly skipped: number;
+      /** Task Id */
+      readonly task_id?: string | null;
     };
     /** ImportedMessage */
     readonly ImportedMessage: {
@@ -19447,6 +19479,8 @@ export type SchemaImageDescriptionModelSelection =
   components["schemas"]["ImageDescriptionModelSelection"];
 export type SchemaImaKnowledgeBaseSummary =
   components["schemas"]["ImaKnowledgeBaseSummary"];
+export type SchemaImportDestinationGroup =
+  components["schemas"]["ImportDestinationGroup"];
 export type SchemaImportedMessage = components["schemas"]["ImportedMessage"];
 export type SchemaImportedSession = components["schemas"]["ImportedSession"];
 export type SchemaImportFileResult = components["schemas"]["ImportFileResult"];
