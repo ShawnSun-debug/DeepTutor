@@ -170,6 +170,11 @@ async def list_imported_chat_history(
 
 # A destination is a store, not a format; the format comes from the file
 # extension. Later destinations are additive entries here, not new shapes.
+#
+# ``destination`` is a closed, case-insensitive enum, so normalising it is safe.
+# Anything that identifies user data — a knowledge-base name, a collection id —
+# is case-sensitive and must travel in its own verbatim field instead of being
+# smuggled through this one.
 DESTINATION_AUTHORED_PAGE = "authored_page"
 
 # One request is the batch a user picked in a file dialog, so the ceiling only
