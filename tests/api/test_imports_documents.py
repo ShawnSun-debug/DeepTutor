@@ -241,3 +241,33 @@ def test_parent_page_is_passed_through(client: TestClient) -> None:
     assert response.status_code == 200
     child = client.get(f"/api/documents/{response.json()['files'][0]['document_id']}").json()
     assert child["parent_id"] == parent["id"]
+
+
+def test_a_batch_where_every_file_fails_is_still_a_200(client: TestClient) -> None:
+    """A bad batch is not a bad request: there is a per-file outcome for each."""
+    response = client.post(
+        "/api/imports/documents",
+        files=[_markdown("a.txt", b"x"), _markdown("b.txt", b"y")],
+    )
+    assert response.status_code == 200
+    assert response.json()["imported"] == 0
+    assert response.json()["skipped"] == 2
+
+
+def test_unknown_parent_page_fails_each_file_and_creates_nothing(client: TestClient) -> None:
+    """The parent is per request, so a missing one fails the batch per file."""
+    response = client.post(
+        "/api/imports/documents",
+        data={"parent_id": "deadbeef1234"},
+        files=[_markdown("orphan.md", b"# orphan\n"), _markdown("also.md", b"# also\n")],
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["failed"] == 2
+    assert payload["imported"] == 0
+    for item in payload["files"]:
+        assert item["outcome"] == "failed"
+        assert item["document_id"] is None
+        assert "Parent page does not exist" in item["reason"]
+    # Nothing was created, so nothing can be opened.
+    assert client.get("/api/documents").json()["documents"] == []
