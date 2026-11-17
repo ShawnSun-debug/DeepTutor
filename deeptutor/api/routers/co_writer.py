@@ -16,6 +16,14 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from deeptutor.api.utils.upload_reader import (
+    MAX_UPLOAD_BYTES,
+    UPLOAD_CHUNK_BYTES,
+    UploadEmpty,
+    UploadTooLarge,
+    read_upload_bytes,
+)
+
 # ``docx_converter`` imports python-docx lazily, so this stays import-cheap.
 from deeptutor.co_writer.docx_converter import (
     DocxConversionError,
@@ -157,8 +165,11 @@ def _selected_edit_agent(
 _MAX_DOC_CHARS = 600_000
 _MAX_SELECTION_CHARS = 120_000
 _MAX_INSTRUCTION_CHARS = 10_000
-_MAX_DOCX_UPLOAD_BYTES = 20 * 1024 * 1024
-_DOCX_UPLOAD_CHUNK = 1024 * 1024
+# The upload ceiling is format-neutral now that every import route shares
+# one reader. The DOCX names stay as aliases so existing callers and tests
+# keep working untouched.
+_MAX_DOCX_UPLOAD_BYTES = MAX_UPLOAD_BYTES
+_DOCX_UPLOAD_CHUNK = UPLOAD_CHUNK_BYTES
 
 
 class EditRequest(BaseModel):
@@ -788,22 +799,16 @@ async def import_docx(file: UploadFile = File(...)) -> DocumentResponse:
     if ext != ".docx":
         raise HTTPException(status_code=400, detail="Only .docx files can be imported.")
 
-    chunks: list[bytes] = []
-    written = 0
-    while chunk := await file.read(_DOCX_UPLOAD_CHUNK):
-        written += len(chunk)
-        if written > _MAX_DOCX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{filename} exceeds the {_MAX_DOCX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
-                ),
-            )
-        chunks.append(chunk)
-    if written == 0:
-        raise HTTPException(status_code=400, detail=f"{filename} is empty.")
-
-    data = b"".join(chunks)
+    # Read through the module-level names so a caller can still override the
+    # ceiling (existing DOCX tests monkeypatch them).
+    try:
+        data = await read_upload_bytes(
+            file, max_bytes=_MAX_DOCX_UPLOAD_BYTES, chunk_bytes=_DOCX_UPLOAD_CHUNK
+        )
+    except UploadTooLarge as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UploadEmpty as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         markdown = await asyncio.to_thread(docx_to_markdown, data, filename)
     except DocxConversionError as exc:
