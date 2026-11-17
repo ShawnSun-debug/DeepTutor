@@ -5069,6 +5069,30 @@ def _removed_files_note(count: int) -> str:
     )
 
 
+def _record_reported_removals(
+    manager, kb_name: str, folder_id: str, removed_files: list[str]
+) -> None:
+    """Forget removals the response is about to report.
+
+    Reported once is reported forever otherwise: change detection keys its
+    state by source path, so a tracked path the folder no longer provides
+    would be re-announced by every later sync. Pruning here keeps the
+    reported removal honest without deleting the imported copy.
+
+    Bookkeeping must never fail a scan that already succeeded, so a failure
+    is logged and the removals are reported anyway.
+    """
+    if not removed_files:
+        return
+    try:
+        manager.prune_folder_sync_state(kb_name, folder_id, removed_files)
+    except Exception as exc:
+        logger.warning(
+            f"Could not forget {len(removed_files)} reported removal(s) from folder "
+            f"f'{folder_id}' of KB '{kb_name}': {exc}"
+        )
+
+
 async def _run_folder_sync_task(sync_lock: FolderSyncLock, **task_kwargs) -> None:
     """Run the shared upload task and hand this folder source's lock back.
 
@@ -5129,6 +5153,7 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
             # Persisting this timestamp makes the UI's "last successful sync"
             # truthful for empty and already-current folders as well.
             manager.update_folder_sync_state(kb_name, folder_id, [])
+            _record_reported_removals(manager, kb_name, folder_id, removed_files)
             return SyncFolderResponse(
                 message=f"No new or modified files to sync{removed_suffix}",
                 folder_path=folder_path,
@@ -5190,6 +5215,8 @@ async def sync_folder(kb_name: str, folder_id: str, background_tasks: Background
             # Nothing was queued, so the source must not stay locked.
             sync_lock.release()
             raise
+
+        _record_reported_removals(manager, kb_name, folder_id, removed_files)
 
         return SyncFolderResponse(
             message=f"Syncing {len(files_to_process)} files from linked folder{removed_suffix}",

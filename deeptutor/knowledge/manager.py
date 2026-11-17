@@ -2285,6 +2285,49 @@ class KnowledgeBaseManager:
                 atomic_write_json(metadata_file, metadata)
                 break
 
+    def prune_folder_sync_state(
+        self, kb_name: str, folder_id: str, removed_files: list[str]
+    ) -> None:
+        """Forget tracked source paths the folder no longer provides.
+
+        Change detection keys its state by source path, so a path left in
+        "synced_files" is re-reported as removed by every later scan. A removal
+        is reported to the caller exactly once, after which the path leaves the
+        tracked set. This is not a delete: the imported copy stays in the
+        knowledge base, because deleting it would let an unmounted network
+        share silently destroy documents.
+        """
+        if not removed_files:
+            return
+        if kb_name not in self.list_knowledge_bases():
+            raise ValueError(f"Knowledge base not found: {kb_name}")
+
+        kb_dir = self.base_dir / kb_name
+        metadata_file = kb_dir / "metadata.json"
+
+        if not metadata_file.exists():
+            return
+
+        try:
+            with open(metadata_file, encoding="utf-8") as f:
+                metadata = json.load(f)
+        except Exception:
+            return
+
+        for folder in metadata.get("linked_folders", []):
+            if folder.get("id") != folder_id:
+                continue
+            file_states = folder.get("synced_files", {})
+            gone = [path for path in removed_files if path in file_states]
+            if not gone:
+                return
+            for path in gone:
+                del file_states[path]
+            folder["synced_files"] = file_states
+            folder["file_count"] = len(file_states)
+            atomic_write_json(metadata_file, metadata)
+            return
+
     # ------------------------------------------------------------------
     # GitHub source management
     # ------------------------------------------------------------------

@@ -561,3 +561,33 @@ def test_a_second_sync_while_the_first_is_running_dispatches_nothing(
     assert second.status_code == 409
     assert "already" in second.json()["detail"].lower()
     assert len(dispatched) == 1
+
+
+def test_a_reported_removal_is_not_reported_again(linked_kb: _LinkedFolderKB) -> None:
+    """A removal is reported once, then forgotten instead of nagging forever.
+
+    With a startup sync this is what keeps a launch from re-announcing a
+    deletion the user already saw. Forgetting the tracked path is not a
+    delete: the imported copy stays in the knowledge base.
+    """
+    imported = linked_kb.kb_dir / "raw" / "drop.md"
+    imported.parent.mkdir(parents=True)
+    imported.write_text("imported", encoding="utf-8")
+    linked_kb.record_synced(linked_kb.keep, linked_kb.drop)
+    linked_kb.drop.unlink()
+
+    with TestClient(_build_app()) as client:
+        first = linked_kb.sync(client)
+        second = linked_kb.sync(client)
+
+    assert first.status_code == 200
+    assert first.json()["removed"] == [str(linked_kb.drop)]
+    assert second.status_code == 200
+    assert second.json()["removed"] == []
+    assert second.json()["removed_files"] == 0
+    assert "no longer in the folder" not in second.json()["message"]
+    # Pruning the tracked set must never touch what was imported.
+    assert imported.read_text(encoding="utf-8") == "imported"
+    stored = linked_kb.stored_folder()["synced_files"]
+    assert str(linked_kb.keep) in stored
+    assert str(linked_kb.drop) not in stored

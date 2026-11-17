@@ -8,6 +8,7 @@ import pytest
 
 from deeptutor.services.config.model_catalog import SERVICE_NAMES
 from deeptutor.services.config.runtime_settings import (
+    DEFAULT_SYSTEM_SETTINGS,
     SETTINGS_DERIVED_ENV_KEYS,
     RuntimeSettingsService,
     ensure_runtime_settings_files,
@@ -68,6 +69,32 @@ def test_capability_routing_defaults_to_disabled(tmp_path) -> None:
     service = RuntimeSettingsService(tmp_path / "settings")
 
     assert service.load_system()["capability_routing_enabled"] is False
+
+
+def test_startup_folder_sync_defaults_to_enabled_and_can_be_turned_off(tmp_path) -> None:
+    """#9: one automatic sync per start is the default; an operator can stop it."""
+    service = RuntimeSettingsService(tmp_path / "settings", process_env={})
+
+    assert DEFAULT_SYSTEM_SETTINGS["startup_folder_sync_enabled"] is True
+    assert service.load_system()["startup_folder_sync_enabled"] is True
+
+    saved = service.save_system({"startup_folder_sync_enabled": False})
+
+    assert saved["startup_folder_sync_enabled"] is False
+    assert service.load_system()["startup_folder_sync_enabled"] is False
+    assert _read_json(service.path_for("system"))["startup_folder_sync_enabled"] is False
+
+
+def test_startup_folder_sync_honours_the_deployment_override(tmp_path) -> None:
+    service = RuntimeSettingsService(
+        tmp_path / "settings",
+        process_env={"DEEPTUTOR_STARTUP_FOLDER_SYNC_ENABLED": "false"},
+    )
+    service.save_system({"startup_folder_sync_enabled": True})
+
+    assert service.load_system()["startup_folder_sync_enabled"] is False
+    # The deployment switch must not be baked into the file as a user choice.
+    assert _read_json(service.path_for("system"))["startup_folder_sync_enabled"] is True
 
 
 def test_web_search_source_filter_defaults_to_safe_runtime_json(tmp_path) -> None:
