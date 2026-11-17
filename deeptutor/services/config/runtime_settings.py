@@ -41,6 +41,13 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
     # Conservative chat -> deep_question routing. Explicit requests only, and
     # callers can still pass config.auto_route=false for a single turn.
     "capability_routing_enabled": False,
+    # One best-effort sync of every linked folder source at application startup
+    # (#9): a restart should pick folder changes up without the user clicking
+    # sync first. On by default because that is what the feature is for; an
+    # operator can turn it off here or with
+    # DEEPTUTOR_STARTUP_FOLDER_SYNC_ENABLED. Nothing waits for the sync and a
+    # failing folder is recorded, never raised into startup.
+    "startup_folder_sync_enabled": True,
     # Which backend serves web_fetch calls (issue #2448): "local" (the
     # in-process extractor, default) or a registered remote backend such as
     # "deepseek". Read at call time so a change applies to the next fetch;
@@ -964,6 +971,8 @@ class RuntimeSettingsService:
             payload["sandbox_allow_subprocess"] = value
         if value := self._process_env_value("DEEPTUTOR_CAPABILITY_ROUTING_ENABLED"):
             payload["capability_routing_enabled"] = value
+        if value := self._process_env_value("DEEPTUTOR_STARTUP_FOLDER_SYNC_ENABLED"):
+            payload["startup_folder_sync_enabled"] = value
         if value := self._process_env_value("DEEPTUTOR_FETCH_BACKEND"):
             payload["web_fetch_backend"] = value
         if value := self._process_env_value("CHAT_ATTACHMENT_MAX_FILE_MB"):
@@ -1426,6 +1435,9 @@ class RuntimeSettingsService:
             ),
             "capability_routing_enabled": _coerce_bool(
                 settings.get("capability_routing_enabled"), False
+            ),
+            "startup_folder_sync_enabled": _coerce_bool(
+                settings.get("startup_folder_sync_enabled"), True
             ),
             "web_fetch_backend": _normalize_web_fetch_backend(settings.get("web_fetch_backend")),
             "web_search_source_filtering": {
